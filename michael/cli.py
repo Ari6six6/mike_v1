@@ -30,7 +30,6 @@ from michael.backends import (
     _require_endpoint,
     _ssh_argv,
     _ssh_preflight,
-    chat_stream,
     gpu_port_forward_cmd,
     llm_client,
     make_backend,
@@ -243,83 +242,6 @@ def cmd_config() -> None:
     G.GLOBAL_CONFIG_PATH.write_text(edited)
     os.chmod(G.GLOBAL_CONFIG_PATH, 0o600)
     G.console.print("[green]config saved[/]")
-
-
-def cmd_up() -> None:
-    cfg = Config.load()
-    name, profile = cfg.get_model()
-    if not profile.vast_instance_id:
-        raise G.MichaelError(f"models.{name}.vast_instance_id is not set (run `config`)")
-    vast = VastClient(cfg.vast_api_key)
-    try:
-        vast.start(profile.vast_instance_id)
-        append_event(
-            "instance.start_requested",
-            {"id": profile.vast_instance_id, "model": name},
-        )
-        G.console.print(f"[cyan]starting {name} (instance {profile.vast_instance_id})…[/]")
-        endpoint: Optional[str] = None
-        _max_wait_s = 600
-        _poll_s = max(cfg.boot_poll_s, 10)
-        _elapsed = 0
-        _attempt = 0
-        while _elapsed < _max_wait_s:
-            time.sleep(_poll_s)
-            _elapsed += _poll_s
-            _attempt += 1
-            try:
-                ep = vast.endpoint_for(profile.vast_instance_id, profile.vllm_internal_port)
-            except G.MichaelError:
-                ep = None
-            append_event(
-                "instance.poll",
-                {"i": _attempt, "model": name, "endpoint_known": bool(ep), "elapsed_s": _elapsed},
-            )
-            if not ep:
-                G.console.print(f"[dim]· poll {_attempt} ({_elapsed}s elapsed): no endpoint yet[/]")
-            elif _ping_vllm(ep, profile.vllm_api_key, timeout_s=10.0):
-                endpoint = ep
-                break
-            else:
-                G.console.print(f"[dim]· poll {_attempt} ({_elapsed}s elapsed): endpoint {ep} not ready[/]")
-            _poll_s = min(_poll_s * 2, 60)
-        if not endpoint:
-            raise G.MichaelError(f"instance did not become ready within {_max_wait_s}s")
-        append_event("endpoint.discovered", {"endpoint": endpoint, "model": name})
-        append_event(
-            "instance.started",
-            {"id": profile.vast_instance_id, "model": name, "endpoint": endpoint},
-        )
-        profile.endpoint = endpoint
-        cfg.models[name] = profile
-        cfg.save()
-        G.console.print(f"[green]ready[/] {name} @ {endpoint}")
-    finally:
-        vast.close()
-
-
-def cmd_down() -> None:
-    cfg = Config.load()
-    name, profile = cfg.get_model()
-    if not profile.vast_instance_id:
-        raise G.MichaelError(f"models.{name}.vast_instance_id is not set")
-    vast = VastClient(cfg.vast_api_key)
-    try:
-        vast.stop(profile.vast_instance_id)
-        append_event(
-            "instance.stop_requested",
-            {"id": profile.vast_instance_id, "model": name},
-        )
-        append_event(
-            "instance.stopped",
-            {"id": profile.vast_instance_id, "model": name},
-        )
-        profile.endpoint = None
-        cfg.models[name] = profile
-        cfg.save()
-        G.console.print(f"[yellow]stopped[/] {name} ({profile.vast_instance_id})")
-    finally:
-        vast.close()
 
 
 def cmd_gpu_up() -> None:
@@ -540,47 +462,6 @@ def cmd_status() -> None:
 
     table.add_row("errors (global)", str(state["errors"]))
     G.console.print(table)
-
-
-def cmd_ask(prompt: str) -> None:
-    cfg = Config.load()
-    name, profile = cfg.get_model()
-    endpoint = _require_endpoint(profile, name)
-    client = llm_client(endpoint, profile.vllm_api_key, profile.enable_thinking)
-    project = get_active_project()
-    if project is not None:
-        append_event(
-            "prompt.sent",
-            {"prompt": prompt, "model": name, "served": profile.served_model_name},
-            project=project,
-        )
-        system_msg = build_header(project, cfg.resolved_system_prompt())
-    else:
-        append_event(
-            "prompt.sent",
-            {"prompt": prompt, "model": name, "served": profile.served_model_name},
-        )
-        system_msg = cfg.resolved_system_prompt()
-
-    messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": prompt},
-    ]
-    text, usage = chat_stream(
-        client,
-        profile.served_model_name,
-        messages,
-        timeout_s=float(profile.request_timeout_s),
-    )
-    payload: dict[str, Any] = {
-        "chars": len(text),
-        "model": name,
-        "served": profile.served_model_name,
-        "usage": usage,
-    }
-    if cfg.log_responses:
-        payload["text"] = text
-    append_event("assistant.message", payload, project=project)
 
 
 def cmd_run(prompt: str) -> None:
@@ -991,18 +872,6 @@ def config_cmd() -> None:
     cmd_config()
 
 
-@app.command(name="up")
-def up_cmd() -> None:
-    """Resume the GPU instance and wait for vLLM."""
-    cmd_up()
-
-
-@app.command(name="down")
-def down_cmd() -> None:
-    """Pause the GPU instance."""
-    cmd_down()
-
-
 @gpu_app.command("up")
 def gpu_up_cmd() -> None:
     """Start the Vast.ai instance, install vLLM, serve the model, print port-forward."""
@@ -1019,14 +888,6 @@ def gpu_down_cmd() -> None:
 def status_cmd() -> None:
     """Show derived state from the event log."""
     cmd_status()
-
-
-@app.command(name="ask")
-def ask_cmd(
-    prompt: str = typer.Argument(..., help="One-shot prompt for the LLM."),
-) -> None:
-    """One-shot LLM call (uses active project's context if any)."""
-    cmd_ask(prompt)
 
 
 @app.command(name="run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1140,7 +1001,7 @@ def tools_show_cmd(
 # ---------------------------------------------------------------------------
 
 REPL_COMMANDS = {
-    "project", "new", "run", "up", "down", "gpu", "config", "init",
+    "project", "new", "run", "gpu", "config", "init",
     "tools", "quit", "exit", "help",
 }
 
@@ -1274,10 +1135,6 @@ def dispatch_repl(line: str) -> None:
             G.err.print("run requires a prompt. Example: run fix the auth bug")
             return
         cmd_run(" ".join(rest))
-    elif cmd == "up":
-        cmd_up()
-    elif cmd == "down":
-        cmd_down()
     elif cmd == "gpu":
         sub = rest[0] if rest else ""
         if sub == "up":

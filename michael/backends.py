@@ -503,28 +503,6 @@ def _ping_vllm(endpoint: str, api_key: str = "", *, timeout_s: float = 5.0) -> b
         return False
 
 
-def chat_stream(
-    client: LLMClient,
-    model: str,
-    messages: list,
-    *,
-    timeout_s: float = 120.0,
-) -> tuple[str, Optional[dict]]:
-    chunks: list[str] = []
-    usage: Optional[dict] = None
-    for chunk in client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        timeout=timeout_s,
-        stream_options={"include_usage": True},
-    ):
-        if chunk.content:
-            chunks.append(chunk.content)
-    text = "".join(chunks)
-    return text, usage
-
-
 # ---------------------------------------------------------------------------
 # Sandbox backends
 # ---------------------------------------------------------------------------

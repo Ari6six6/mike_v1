@@ -499,8 +499,7 @@ def test_build_header_includes_protocol(home, workspace):
 def test_repl_commands_include_core_commands():
     assert "run" in m.REPL_COMMANDS
     assert "new" in m.REPL_COMMANDS
-    assert "up" in m.REPL_COMMANDS
-    assert "down" in m.REPL_COMMANDS
+    assert "gpu" in m.REPL_COMMANDS
 
 
 # ---- workbench -----------------------------------------------------------

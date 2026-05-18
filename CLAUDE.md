@@ -93,7 +93,7 @@ michael ssh-test                  # verify roundtrip
      }
    }
    ```
-4. Start inference: `michael up` (polls until vLLM is ready, caches the endpoint).
+4. Start inference: `michael gpu up` (SSHes to the GPU, installs vLLM if missing, launches it with the right flags, caches the endpoint).
 
 ### 4. First run
 
@@ -143,10 +143,9 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael use <slug>` | Switch active project |
 | `michael current` | Print active project |
 | `michael config` | Open `config.json` in `$EDITOR` |
-| `michael up` | Start Vast.ai instance, wait for vLLM |
-| `michael down` | Stop Vast.ai instance |
+| `michael gpu up` | SSH to GPU, install vLLM if missing, launch model, cache endpoint |
+| `michael gpu down` | Pause the GPU instance |
 | `michael status` | Derived state from event log |
-| `michael ask "<prompt>"` | One-shot LLM call (no tool loop) |
 | `michael run <prompt…>` | **Run the agent.** Everything after `run` is the prompt |
 | `michael log [--tail N]` | Show event log (last 20 by default) |
 | `michael sandbox <file.py>` | Run Python file in isolated sandbox |

@@ -207,7 +207,7 @@ Write this number down — you need it in Phase 4.
 
 ### 3.4 — Stop the instance (save credits)
 
-Stop or do not start the instance yet. Michael will start it for you in Phase 5 via `michael up`.
+Stop or do not start the instance yet. Michael will start it for you in Phase 5 via `michael gpu up`.
 
 ---
 
@@ -266,14 +266,16 @@ If it fails: re-check `vps.host`, `vps.user`, and that your SSH key is in
 ## Phase 5 — Start the GPU and wait for vLLM
 
 ```bash
-michael up
+michael gpu up
 ```
 
 What happens:
-1. Michael calls the Vast.ai API to start your instance
-2. It polls `GET /v1/models` on the vLLM endpoint every 10–60 seconds (exponential backoff)
-3. You see progress: `[Xs] polling endpoint…`
-4. When vLLM responds 200 OK, Michael caches the endpoint in `~/.michael/config.json`
+1. Michael SSHes into the GPU and checks if vLLM is installed; pip-installs it if missing
+2. Kills any stale `vllm serve` process and relaunches with the correct flags
+   (`--enable-auto-tool-choice --tool-call-parser hermes`, plus `--api-key` if you set one)
+3. Polls `/v1/models` every 30 s for up to 90 min, tailing `/tmp/vllm.log` so you see progress
+4. On success, caches `endpoint` and `served_model_name` in `~/.michael/config.json` and
+   prints the port-forward command to run in a second terminal
 
 **Expected total time:**
 - If the model is already cached on the Vast instance disk: ~3–6 minutes
@@ -338,10 +340,9 @@ michael log --tail 50 # last 50 events
 
 | Goal | Command |
 |------|---------|
-| Start the GPU for a session | `michael up` |
-| Stop the GPU (save credits) | `michael down` |
+| Start the GPU for a session | `michael gpu up` |
+| Stop the GPU (save credits) | `michael gpu down` |
 | Check current state | `michael status` |
-| One-shot LLM question (no tool loop) | `michael ask "what does this function do?"` |
 | Full agent run | `michael run <your prompt>` |
 | Run Python in isolated sandbox | `michael sandbox script.py` |
 | Revert last committed change | `michael undo` |
@@ -354,7 +355,7 @@ michael log --tail 50 # last 50 events
 
 ## Troubleshooting
 
-### `michael up` times out (600s)
+### `michael gpu up` times out (90 min)
 - Check the Vast console — is the instance actually running?
 - Check the on-start command for syntax errors (especially quotes)
 - SSH into the Vast instance and check `nvidia-smi` and vLLM logs
@@ -372,13 +373,14 @@ michael log --tail 50 # last 50 events
 
 ### LLM never calls `commit_changes`
 - The model may need more context or a more specific prompt
-- Try `michael ask` for a quick sanity check that the endpoint is working
 - Check `michael log` to see LLM responses
+- If the run hits `MAX_AGENT_TURNS` (60) without committing, pending changes are
+  discarded; run again with a tighter prompt to continue
 - If the run hits `MAX_AGENT_TURNS` (60) without committing, pending changes are discarded;
   run again with a tighter prompt to continue
 
 ### Vast.ai endpoint changes after restart
-- Run `michael up` after each instance restart — it re-polls and re-caches the endpoint
+- Run `michael gpu up` after each instance restart — it re-checks vLLM and re-caches the endpoint
 - The old cached endpoint in `config.json` becomes invalid when the instance stops
 
 ---
