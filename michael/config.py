@@ -1,6 +1,7 @@
 """Config dataclasses: ModelProfile, VpsConfig, SandboxConfig, Config."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -112,7 +113,9 @@ class Config:
 
     def save(self) -> None:
         G.STATE_DIR.mkdir(mode=0o700, exist_ok=True)
-        G.GLOBAL_CONFIG_PATH.write_text(json.dumps(asdict(self), indent=2, sort_keys=True))
+        G.GLOBAL_CONFIG_PATH.write_text(
+            json.dumps(_diff_from_default(self, Config()), indent=2, sort_keys=True)
+        )
         os.chmod(G.GLOBAL_CONFIG_PATH, 0o600)
 
     def get_model(self, name: Optional[str] = None) -> tuple[str, ModelProfile]:
@@ -138,20 +141,45 @@ class Config:
         return bool(self.vps and self.vps.host)
 
 
+def _diff_from_default(obj: Any, default: Any) -> Any:
+    """Recursively prune a dataclass against a default instance of the same type.
+
+    Returns a dict containing only fields whose values differ from the default.
+    Nested dataclasses are pruned recursively; if a nested object equals its
+    default entirely, it is omitted. Dicts whose values are dataclasses (e.g.
+    Config.models) keep their keys but each value is pruned individually.
+    """
+    if not dataclasses.is_dataclass(obj):
+        return obj
+    out: dict[str, Any] = {}
+    for f in dataclasses.fields(obj):
+        cur = getattr(obj, f.name)
+        dflt = getattr(default, f.name)
+        if dataclasses.is_dataclass(cur) and dataclasses.is_dataclass(dflt):
+            pruned = _diff_from_default(cur, dflt)
+            if pruned:
+                out[f.name] = pruned
+        elif isinstance(cur, dict):
+            pruned_dict: dict[str, Any] = {}
+            for k, v in cur.items():
+                if dataclasses.is_dataclass(v):
+                    pruned_dict[k] = _diff_from_default(v, type(v)())
+                else:
+                    pruned_dict[k] = v
+            if pruned_dict != dflt:
+                out[f.name] = pruned_dict
+        elif cur != dflt:
+            out[f.name] = cur
+    return out
+
+
 def make_stub_config() -> Config:
-    return Config(
-        vast_api_key="",
-        models={
-            "god": ModelProfile(
-                vast_instance_id="",
-                served_model_name="",
-            ),
-        },
-        default_model="god",
-        vps=VpsConfig(),
-        sandbox=SandboxConfig(),
-        log_responses=True,
-    )
+    """Minimal starting point: one empty 'god' model profile so the agent loop
+    has something to dispatch to. Every other field uses its dataclass default;
+    save-time pruning keeps the on-disk file to just what the user (or
+    `michael gpu up`) has actually written.
+    """
+    return Config(models={"god": ModelProfile()}, default_model="god")
 
 
 CONFIG_HELP: dict[str, str] = {
