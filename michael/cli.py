@@ -322,16 +322,17 @@ def cmd_gpu_up() -> None:
             G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
             # Subshell + redirecting all three std streams (incl. stdin from /dev/null)
             # is required so sshd doesn't wait for the orphaned job's fds to close.
-            # `pip cache purge` + `--no-cache-dir` defends against poisoned cache
-            # entries from prior interrupted installs (the "hash mismatch from
-            # requirements file" error is pip's own integrity check on stale
-            # partial downloads).
+            # `rm -rf ~/.cache/pip` nukes any poisoned wheels left by a previous
+            # interrupted install. `--isolated` makes pip ignore every config
+            # source (user/system pip.conf, PIP_* env vars) so a hash-enforcing
+            # default on the Vast image can't sabotage the install. `--no-cache-dir`
+            # keeps the install hermetic from end to end.
             _gpu_ssh_run(
                 gpu,
-                "rm -f /tmp/vllm_install.exit && "
+                "rm -f /tmp/vllm_install.exit && rm -rf ~/.cache/pip && "
                 "( nohup bash -c "
-                "'pip cache purge >/dev/null 2>&1; "
-                "pip install --no-cache-dir vllm --upgrade > /tmp/vllm_install.log 2>&1; "
+                "'pip install --isolated --no-cache-dir vllm --upgrade "
+                "> /tmp/vllm_install.log 2>&1; "
                 "echo $? > /tmp/vllm_install.exit' "
                 "> /dev/null 2>&1 < /dev/null & ) && echo started",
                 timeout=30,
