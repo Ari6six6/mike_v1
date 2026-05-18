@@ -144,25 +144,6 @@ def cmd_init() -> None:
     )
 
 
-def cmd_upgrade() -> None:
-    repo_dir = pathlib.Path(__file__).parent.parent
-    if not (repo_dir / ".git").is_dir():
-        raise G.MichaelError(f"not a git repo: {repo_dir}")
-    G.console.print(f"[dim]pulling {repo_dir}…[/]")
-    cp = subprocess.run(
-        ["git", "pull", "--ff-only"],
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if cp.returncode != 0:
-        raise G.MichaelError(f"git pull failed:\n{cp.stderr.strip()}")
-    G.console.print(f"[green]{cp.stdout.strip() or 'already up to date'}[/]")
-    shell_msg = _inject_shell_integration()
-    G.console.print(shell_msg)
-
-
 def cmd_show() -> None:
     projects = list_projects()
     if not projects:
@@ -834,12 +815,6 @@ def init_cmd() -> None:
     cmd_init()
 
 
-@app.command(name="upgrade")
-def upgrade_cmd() -> None:
-    """git pull the michael repo and re-run shell integration."""
-    cmd_upgrade()
-
-
 @app.command(name="show")
 def show_cmd() -> None:
     """List projects."""
@@ -1118,8 +1093,6 @@ def dispatch_repl(line: str) -> None:
 
     if cmd == "init":
         cmd_init()
-    elif cmd == "upgrade":
-        cmd_upgrade()
     elif cmd == "config":
         cmd_config()
     elif cmd == "project":

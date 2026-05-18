@@ -53,7 +53,7 @@ This script is idempotent — safe to run over an existing install. It:
 - Installs `python`, `openssh`, `git`, `rsync`, `coreutils`, `nano` via `pkg`
 - Installs all Python deps from `requirements.txt` via pip (uses `httpx`, not the OpenAI SDK — no Rust compiler needed)
 - Creates `~/.michael/` state directory
-- Generates `~/.ssh/id_ed25519` if it does not exist (skips if it does)
+- Requires `~/.ssh/id_ed25519` to already exist — bootstrap does **not** generate keys. If missing, it errors out with the `ssh-keygen` command for you to run.
 - Installs the `michael` wrapper at `$PREFIX/bin/michael`
 - Runs `michael init` to create a stub `~/.michael/config.json`
 
@@ -166,48 +166,32 @@ ssh michael@<vps-ip> "cd /opt/project_michael && podman build -t michael-sandbox
 
 ---
 
-## Phase 3 — Vast.ai: rent a GPU and configure vLLM
+## Phase 3 — Vast.ai: rent a GPU
 
-### 3.1 — Choose a GPU and model
+Michael drives vLLM over SSH — you do **not** need to configure an on-start command, an
+api-key, or a model in the Vast console. Just rent a GPU with a PyTorch-based template
+and stop here; Phase 5 (`michael gpu up`) installs vLLM, launches the model with the
+correct flags, and caches the endpoint.
 
-| VRAM | GPU example | Recommended model |
-|------|------------|-------------------|
-| 24 GB | RTX 4090 | `Qwen/Qwen2.5-Coder-32B-Instruct` (GPTQ/Q4) or `meta-llama/Llama-3.1-8B-Instruct` |
-| 48 GB | RTX A6000 / L40S | `Qwen/Qwen2.5-32B-Instruct` (fp16) |
-| 80 GB | H100 | `Qwen/Qwen2.5-72B-Instruct` or `deepseek-ai/DeepSeek-Coder-V2-Instruct` |
+### 3.1 — Pick a GPU
 
-### 3.2 — Rent an instance
+The default model is `Qwen/Qwen2.5-72B-Instruct-AWQ` (configured in `gpu.model_repo`),
+which needs ≥45 GB VRAM. Rent accordingly (A100 80 GB, H100, or A6000-class). If you
+want a different model, set `gpu.model_repo` in Phase 4 before running `gpu up`.
+
+### 3.2 — Rent
 
 1. Go to **console.vast.ai → Search**
 2. Filter by your target GPU
-3. Choose an instance that has a vLLM-compatible template, or select a bare PyTorch image
-4. In the **On-Start Command** field (or equivalent), enter:
+3. Pick any vLLM-compatible PyTorch template (`vllm/vllm-openai`, the default PyTorch
+   templates, etc.). No on-start command needed.
+4. Click **Rent**
 
-```bash
-python -m vllm.entrypoints.openai.api_server \
-  --model <HF-model-id> \
-  --served-model-name god \
-  --api-key <your-chosen-api-key> \
-  --port 8000 \
-  --dtype auto \
-  --max-model-len 16384
-```
+### 3.3 — Copy the SSH command
 
-Replace `<HF-model-id>` with the full Hugging Face model ID (e.g. `Qwen/Qwen2.5-Coder-32B-Instruct`)
-and `<your-chosen-api-key>` with any secret string you choose (you will paste this into Michael's config).
-
-5. Click **Rent** — do NOT start it yet (or start and immediately stop it to note the instance ID)
-
-### 3.3 — Note the instance ID
-
-The numeric instance ID appears in the Vast console URL when you click on the instance:
-`https://console.vast.ai/instances/<ID>/`
-
-Write this number down — you need it in Phase 4.
-
-### 3.4 — Stop the instance (save credits)
-
-Stop or do not start the instance yet. Michael will start it for you in Phase 5 via `michael gpu up`.
+Once the instance is up, the Vast console shows an SSH command like
+`ssh root@1.2.3.4 -p 10022`. Copy it as-is — Phase 5 will paste it into a prompt and
+parse host/user/port automatically.
 
 ---
 
@@ -221,34 +205,28 @@ michael config
 
 This opens `~/.michael/config.json` in `$EDITOR` (defaults to `nano`).
 
-### 4.2 — Fill in all required fields
+### 4.2 — Fill in the required fields
 
-Replace the stub with:
+You only need three things by hand: the Vast API key (so `gpu up` can auto-detect your
+instance ID and pause/resume it), the VPS host, and optionally a non-default model. The
+GPU SSH details are filled in for you by Phase 5 from the SSH command you paste.
 
 ```json
 {
   "vast_api_key": "<your Vast.ai API key>",
-  "default_model": "god",
-  "models": {
-    "god": {
-      "vast_instance_id": "<numeric instance ID from Phase 3 step 3.3>",
-      "served_model_name": "god",
-      "vllm_api_key": "<the api-key string from your on-start command>",
-      "vllm_internal_port": 8000,
-      "request_timeout_s": 120
-    }
-  },
   "vps": {
-    "host": "<vps-ip>",
-    "port": 22,
-    "user": "michael",
-    "ssh_key_path": "~/.ssh/id_ed25519",
-    "workspace_dir": "/home/michael/workspace"
+    "host": "<vps-ip>"
+  },
+  "gpu": {
+    "model_repo": "Qwen/Qwen2.5-72B-Instruct-AWQ"
   }
 }
 ```
 
-Save and exit (`Ctrl+X` → `Y` → `Enter` in nano).
+Defaults for everything else (`vps.user=michael`, `vps.ssh_key_path=~/.ssh/id_ed25519`,
+`vps.workspace_dir=/home/michael/workspace`, `gpu.ssh_user=root`, `gpu.vllm_port=8000`)
+match the bootstrap layout — override them only if your setup differs. Save and exit
+(`Ctrl+X` → `Y` → `Enter` in nano).
 
 ### 4.3 — Verify VPS connectivity
 
@@ -357,9 +335,9 @@ michael log --tail 50 # last 50 events
 
 ### `michael gpu up` times out (90 min)
 - Check the Vast console — is the instance actually running?
-- Check the on-start command for syntax errors (especially quotes)
-- SSH into the Vast instance and check `nvidia-smi` and vLLM logs
-- Try a smaller model if VRAM is insufficient
+- SSH into the Vast instance manually and inspect `/tmp/vllm.log` for the real error
+- Confirm the model in `gpu.model_repo` fits in the rented VRAM
+- Confirm `nvidia-smi` works on the instance (the PyTorch template should make it work)
 
 ### `michael ssh-test` fails
 - Confirm `vps.host` is the correct IP
