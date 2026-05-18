@@ -25,7 +25,6 @@ from michael.backends import (
     VastClient,
     _build_vllm_cmd,
     _gpu_ssh_run,
-    _gpu_ssh_stream,
     _ping_vllm,
     _require_endpoint,
     _ssh_argv,
@@ -306,11 +305,48 @@ def cmd_gpu_up() -> None:
     # ── Install vLLM if missing ──
     cp = _gpu_ssh_run(gpu, "python3 -c 'import vllm' 2>/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
-        G.console.print("[cyan]Installing vLLM on the GPU (10–20 min on first run, pip output streams below)…[/]")
-        rc = _gpu_ssh_stream(gpu, "pip install vllm --upgrade", timeout=1800)
-        if rc != 0:
-            raise G.MichaelError("vLLM installation failed — check pip output above for the real error")
-        G.console.print("[green]vLLM installed[/]")
+        G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
+        # Kick off pip in the background on the remote — decouples install time
+        # from this client's SSH session. If Termux dies, the install keeps going.
+        _gpu_ssh_run(
+            gpu,
+            "rm -f /tmp/vllm_install.exit && "
+            "nohup bash -c 'pip install vllm --upgrade > /tmp/vllm_install.log 2>&1; "
+            "echo $? > /tmp/vllm_install.exit' >/dev/null 2>&1 & echo started",
+            timeout=15,
+        )
+        _max_install_s = 3600  # 1 hour
+        _poll_s = 20
+        _elapsed = 0
+        while _elapsed < _max_install_s:
+            time.sleep(_poll_s)
+            _elapsed += _poll_s
+            cp = _gpu_ssh_run(
+                gpu, "cat /tmp/vllm_install.exit 2>/dev/null || echo running", timeout=10
+            )
+            done = cp.stdout.strip()
+            if done and done != "running":
+                rc = int(done) if done.lstrip("-").isdigit() else 1
+                if rc != 0:
+                    tail = _gpu_ssh_run(
+                        gpu, "tail -30 /tmp/vllm_install.log 2>/dev/null", timeout=10
+                    ).stdout
+                    raise G.MichaelError(
+                        f"vLLM install failed (rc={rc}):\n{tail.strip()}"
+                    )
+                G.console.print("[green]vLLM installed[/]")
+                break
+            tail = _gpu_ssh_run(
+                gpu, "tail -1 /tmp/vllm_install.log 2>/dev/null", timeout=10
+            ).stdout.strip().replace("\r", " ")
+            G.console.print(
+                f"[dim]· {_elapsed}s — {(tail[:120] + '…') if len(tail) > 120 else (tail or 'pip warming up…')}[/]"
+            )
+        else:
+            raise G.MichaelError(
+                f"vLLM install did not finish within {_max_install_s}s. "
+                "SSH in and tail /tmp/vllm_install.log for the real status."
+            )
 
     # ── Check if vLLM is already serving ──
     cp = _gpu_ssh_run(

@@ -140,20 +140,6 @@ def _gpu_ssh_run(
         raise G.MichaelError(f"GPU command timed out after {timeout}s")
 
 
-def _gpu_ssh_stream(gpu: GpuConfig, cmd: str, *, timeout: int = 600) -> int:
-    try:
-        proc = subprocess.Popen(
-            _gpu_ssh_argv(gpu) + [cmd],
-            stdout=None,
-            stderr=None,
-        )
-        proc.wait(timeout=timeout)
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        raise G.MichaelError(f"GPU stream command timed out after {timeout}s")
-
-
 def gpu_port_forward_cmd(gpu: GpuConfig) -> str:
     key = os.path.expanduser(gpu.ssh_key_path)
     return (
