@@ -274,11 +274,15 @@ def cmd_gpu_up() -> None:
             while _elapsed < _max_boot:
                 time.sleep(_poll_s)
                 _elapsed += _poll_s
-                cp = _gpu_ssh_run(gpu, "echo ok", timeout=10)
-                if cp.returncode == 0:
-                    booted = True
-                    break
-                G.console.print(f"[dim]· {_elapsed}s — waiting for SSH…[/]")
+                try:
+                    cp = _gpu_ssh_run(gpu, "echo ok", timeout=25)
+                    if cp.returncode == 0:
+                        booted = True
+                        break
+                    reason = (cp.stderr or "").strip()[:120] or f"rc={cp.returncode}"
+                except G.MichaelError as ssh_exc:
+                    reason = str(ssh_exc)[:120]
+                G.console.print(f"[dim]· {_elapsed}s — waiting for SSH ({reason})[/]")
             if not booted:
                 raise G.MichaelError(f"instance did not respond to SSH within {_max_boot}s")
         except G.MichaelError as e:
