@@ -144,6 +144,7 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael current` | Print active project |
 | `michael config` | Open `config.json` in `$EDITOR` |
 | `michael gpu up` | SSH to GPU, install vLLM if missing, launch model, cache endpoint |
+| `michael gpu new` | Swap to a new GPU — clear cached SSH/instance state, re-prompt, then `gpu up` |
 | `michael gpu down` | Pause the GPU instance |
 | `michael status` | Derived state from event log |
 | `michael run <prompt…>` | **Run the agent.** Everything after `run` is the prompt |

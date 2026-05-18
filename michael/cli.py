@@ -385,6 +385,27 @@ def cmd_gpu_up() -> None:
     )
 
 
+def cmd_gpu_new() -> None:
+    """Wipe per-instance GPU state and run `gpu up` for a fresh GPU."""
+    cfg = Config.load()
+    if cfg.gpu.ssh_host or cfg.gpu.vast_instance_id:
+        G.console.print(
+            f"[dim]clearing previous GPU: {cfg.gpu.ssh_user}@{cfg.gpu.ssh_host}"
+            f":{cfg.gpu.ssh_port} (instance {cfg.gpu.vast_instance_id or '—'})[/]"
+        )
+    cfg.gpu.ssh_host = ""
+    cfg.gpu.ssh_port = 22
+    cfg.gpu.ssh_user = "root"
+    cfg.gpu.vast_instance_id = ""
+    cfg.gpu.vllm_api_key = ""
+    for profile in cfg.models.values():
+        profile.endpoint = None
+        profile.served_model_name = ""
+    cfg.save()
+    G.console.print("[green]gpu cleared[/] — paste the new SSH command at the prompt")
+    cmd_gpu_up()
+
+
 def cmd_gpu_down() -> None:
     cfg = Config.load()
     gpu = cfg.gpu
@@ -853,6 +874,12 @@ def gpu_up_cmd() -> None:
     cmd_gpu_up()
 
 
+@gpu_app.command("new")
+def gpu_new_cmd() -> None:
+    """Swap to a new GPU: clears the cached SSH/instance state then runs `gpu up`."""
+    cmd_gpu_new()
+
+
 @gpu_app.command("down")
 def gpu_down_cmd() -> None:
     """Kill vLLM and stop the Vast.ai instance via API."""
@@ -1112,10 +1139,12 @@ def dispatch_repl(line: str) -> None:
         sub = rest[0] if rest else ""
         if sub == "up":
             cmd_gpu_up()
+        elif sub == "new":
+            cmd_gpu_new()
         elif sub == "down":
             cmd_gpu_down()
         else:
-            G.err.print("usage: gpu up | gpu down")
+            G.err.print("usage: gpu up | gpu new | gpu down")
     elif cmd == "tools":
         sub = rest[0] if rest else "list"
         if sub == "list":
