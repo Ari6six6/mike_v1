@@ -23,12 +23,12 @@ import michael.globals as G
 from michael.agent import _run_agent_loop
 from michael.backends import (
     VastClient,
-    _build_vllm_cmd,
     _gpu_ssh_run,
-    _ping_vllm,
+    _ping_endpoint,
     _require_endpoint,
     _ssh_argv,
     _ssh_preflight,
+    _start_ollama_cmd,
     gpu_port_forward_cmd,
     llm_client,
     make_backend,
@@ -66,7 +66,7 @@ app = typer.Typer(
     help="michael — air-gapped AI control loop",
 )
 
-gpu_app = typer.Typer(help="GPU instance management (A100 / vLLM).")
+gpu_app = typer.Typer(help="GPU instance management (Ollama).")
 app.add_typer(gpu_app, name="gpu")
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
@@ -128,9 +128,7 @@ def cmd_init() -> None:
         Panel(
             "Edit ~/.michael/config.json — fill in:\n\n"
             "  [bold]vast_api_key[/]              your Vast.ai console API key\n"
-            "  [bold]models.god.vast_instance_id[/]  numeric instance id\n"
-            "  [bold]models.god.served_model_name[/]  matches --served-model-name on vLLM\n"
-            "  [bold]models.god.vllm_api_key[/]       the key vLLM was launched with\n\n"
+            "  [bold]gpu.model_repo[/]            Ollama tag, e.g. 'qwen2.5:72b'\n\n"
             "[dim]Optional, for remote sandbox on the VPS:[/]\n"
             "  [bold]vps.host[/]                  VPS public IP/hostname\n"
             "  [bold]vps.user[/]                  ssh user (default: michael)\n"
@@ -306,120 +304,103 @@ def cmd_gpu_up() -> None:
                 "Check ssh_key_path in config or try ssh manually."
             )
 
-    # ── Install vLLM if missing ──
-    cp = _gpu_ssh_run(gpu, "python3 -c 'import vllm' 2>/dev/null && echo installed || echo missing")
+    # ── Install ollama if missing ──
+    cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
-        # Reattach to an in-flight install (from a previous gpu up that lost
-        # SSH) rather than racing a second pip against the same site-packages.
+        G.console.print("[cyan]Installing ollama on the GPU (curl one-liner, ~10 s)…[/]")
         cp = _gpu_ssh_run(
             gpu,
-            "pgrep -f 'pip install vllm' >/dev/null && echo running || echo idle",
+            "curl -fsSL https://ollama.com/install.sh | sh",
+            timeout=120,
+        )
+        if cp.returncode != 0:
+            raise G.MichaelError(
+                f"ollama install failed:\n{(cp.stderr or cp.stdout)[:500]}"
+            )
+        G.console.print("[green]ollama installed[/]")
+
+    # ── Ensure ollama daemon is running ──
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=30)
+    G.console.print(f"[dim]ollama daemon: {cp.stdout.strip() or 'started'}[/]")
+
+    # ── Wait for the endpoint to answer ──
+    _max_wait_s = 60
+    _elapsed = 0
+    daemon_ready = False
+    while _elapsed < _max_wait_s:
+        time.sleep(2)
+        _elapsed += 2
+        cp = _gpu_ssh_run(
+            gpu,
+            f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
+            f"&& echo ready || echo down",
             timeout=10,
         )
-        if "running" in cp.stdout:
-            G.console.print("[cyan]vLLM install already running on the GPU — attaching…[/]")
-        else:
-            G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
-            # Subshell + redirecting all three std streams (incl. stdin from /dev/null)
-            # is required so sshd doesn't wait for the orphaned job's fds to close.
-            # `rm -rf ~/.cache/pip` nukes any poisoned wheels left by a previous
-            # interrupted install. `--isolated` makes pip ignore every config
-            # source (user/system pip.conf, PIP_* env vars) so a hash-enforcing
-            # default on the Vast image can't sabotage the install. `--no-cache-dir`
-            # keeps the install hermetic from end to end.
-            _gpu_ssh_run(
-                gpu,
-                "rm -f /tmp/vllm_install.exit && rm -rf ~/.cache/pip && "
-                "( nohup bash -c "
-                "'pip install --isolated --no-cache-dir vllm --upgrade "
-                "> /tmp/vllm_install.log 2>&1; "
-                "echo $? > /tmp/vllm_install.exit' "
-                "> /dev/null 2>&1 < /dev/null & ) && echo started",
-                timeout=30,
-            )
-        _max_install_s = 3600  # 1 hour
-        _poll_s = 20
+        if "ready" in cp.stdout:
+            daemon_ready = True
+            break
+    if not daemon_ready:
+        tail = _gpu_ssh_run(gpu, "tail -20 /tmp/ollama.log 2>/dev/null", timeout=10).stdout
+        raise G.MichaelError(
+            f"ollama daemon did not become ready within {_max_wait_s}s\n{tail.strip()}"
+        )
+
+    # ── Pull the model if not already present ──
+    cp = _gpu_ssh_run(
+        gpu,
+        f"ollama list 2>/dev/null | awk 'NR>1 {{print $1}}' | grep -Fxq {gpu.model_repo!r} "
+        f"&& echo present || echo missing",
+        timeout=15,
+    )
+    if "missing" in cp.stdout:
+        G.console.print(f"[cyan]Pulling model {gpu.model_repo} (this can take a while)…[/]")
+        # Background the pull so a flaky SSH session can't abort it; poll a marker
+        # file the same way we used to for pip.
+        _gpu_ssh_run(
+            gpu,
+            "rm -f /tmp/ollama_pull.exit && "
+            "( nohup bash -c "
+            f"'ollama pull {gpu.model_repo} > /tmp/ollama_pull.log 2>&1; "
+            "echo $? > /tmp/ollama_pull.exit' "
+            "> /dev/null 2>&1 < /dev/null & ) && echo started",
+            timeout=15,
+        )
+        _max_pull_s = 3600  # 1 hour cap for the model pull
+        _poll_s = 15
         _elapsed = 0
-        while _elapsed < _max_install_s:
+        while _elapsed < _max_pull_s:
             time.sleep(_poll_s)
             _elapsed += _poll_s
             cp = _gpu_ssh_run(
-                gpu, "cat /tmp/vllm_install.exit 2>/dev/null || echo running", timeout=10
+                gpu, "cat /tmp/ollama_pull.exit 2>/dev/null || echo running", timeout=10
             )
             done = cp.stdout.strip()
             if done and done != "running":
                 rc = int(done) if done.lstrip("-").isdigit() else 1
                 if rc != 0:
                     tail = _gpu_ssh_run(
-                        gpu, "tail -30 /tmp/vllm_install.log 2>/dev/null", timeout=10
+                        gpu, "tail -30 /tmp/ollama_pull.log 2>/dev/null", timeout=10
                     ).stdout
                     raise G.MichaelError(
-                        f"vLLM install failed (rc={rc}):\n{tail.strip()}"
+                        f"ollama pull failed (rc={rc}):\n{tail.strip()}"
                     )
-                G.console.print("[green]vLLM installed[/]")
+                G.console.print(f"[green]model {gpu.model_repo} pulled[/]")
                 break
             tail = _gpu_ssh_run(
-                gpu, "tail -1 /tmp/vllm_install.log 2>/dev/null", timeout=10
+                gpu, "tail -1 /tmp/ollama_pull.log 2>/dev/null", timeout=10
             ).stdout.strip().replace("\r", " ")
             G.console.print(
-                f"[dim]· {_elapsed}s — {(tail[:120] + '…') if len(tail) > 120 else (tail or 'pip warming up…')}[/]"
+                f"[dim]· {_elapsed}s — {(tail[:120] + '…') if len(tail) > 120 else (tail or 'starting pull…')}[/]"
             )
+            append_event("gpu.poll", {"elapsed_s": _elapsed, "phase": "pull"})
         else:
             raise G.MichaelError(
-                f"vLLM install did not finish within {_max_install_s}s. "
-                "SSH in and tail /tmp/vllm_install.log for the real status."
+                f"ollama pull did not finish within {_max_pull_s}s. "
+                "SSH in and tail /tmp/ollama_pull.log for the real status."
             )
 
-    # ── Check if vLLM is already serving ──
-    cp = _gpu_ssh_run(
-        gpu,
-        f"curl -sf http://localhost:{gpu.vllm_port}/v1/models > /dev/null 2>&1 && echo ready || echo down",
-    )
-    already_ready = "ready" in cp.stdout
-
-    if not already_ready:
-        # Kill any stale process first
-        _gpu_ssh_run(gpu, "pkill -f 'vllm serve' 2>/dev/null || true", timeout=10)
-        time.sleep(2)
-
-        cp = _gpu_ssh_run(gpu, _build_vllm_cmd(gpu), timeout=30)
-        pid = cp.stdout.strip()
-        G.console.print(f"[cyan]vLLM starting[/] (PID {pid}) — model download may take 20–40 min on first boot")
-        G.console.print("[dim]tailing /tmp/vllm.log for progress…[/]")
-    else:
-        G.console.print("[dim]vLLM already serving, skipping start[/]")
-
-    # ── Poll until /v1/models responds ──
-    _max_wait_s = 5400  # 90 min
-    _poll_s = 30
-    _elapsed = 0
-    _attempt = 0
-    endpoint_ready = already_ready
-    while not endpoint_ready and _elapsed < _max_wait_s:
-        time.sleep(_poll_s)
-        _elapsed += _poll_s
-        _attempt += 1
-        cp = _gpu_ssh_run(
-            gpu,
-            f"curl -sf http://localhost:{gpu.vllm_port}/v1/models > /dev/null 2>&1 && echo ready || echo down",
-            timeout=15,
-        )
-        if "ready" in cp.stdout:
-            endpoint_ready = True
-            break
-        log_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null || true", timeout=10)
-        tail = log_cp.stdout.strip().replace("\n", " | ")
-        G.console.print(f"[dim]· {_elapsed}s — {tail or 'loading…'}[/]")
-        append_event("gpu.poll", {"elapsed_s": _elapsed, "attempt": _attempt})
-
-    if not endpoint_ready:
-        raise G.MichaelError(
-            f"vLLM did not become ready within {_max_wait_s}s. "
-            "SSH in and check /tmp/vllm.log"
-        )
-
     # ── Save endpoint into models.god so `michael run` works via port forward ──
-    endpoint = f"http://localhost:{gpu.vllm_port}/v1"
+    endpoint = f"http://localhost:{gpu.gpu_port}/v1"
     if "god" not in cfg.models:
         from michael.config import ModelProfile
         cfg.models["god"] = ModelProfile()
@@ -432,7 +413,7 @@ def cmd_gpu_up() -> None:
     pf_cmd = gpu_port_forward_cmd(gpu)
     G.console.print(
         Panel(
-            f"[bold green]vLLM is ready[/] — {gpu.model_repo}\n\n"
+            f"[bold green]ollama is ready[/] — {gpu.model_repo}\n\n"
             f"[bold]Open a new terminal and run:[/]\n\n"
             f"  {pf_cmd}\n\n"
             f"[dim]Keep that terminal open. Then use:[/]\n"
@@ -455,7 +436,6 @@ def cmd_gpu_new() -> None:
     cfg.gpu.ssh_port = 22
     cfg.gpu.ssh_user = "root"
     cfg.gpu.vast_instance_id = ""
-    cfg.gpu.vllm_api_key = ""
     for profile in cfg.models.values():
         profile.endpoint = None
         profile.served_model_name = ""
@@ -470,12 +450,16 @@ def cmd_gpu_down() -> None:
     if not gpu.ssh_host:
         raise G.MichaelError("no GPU configured — run `michael gpu up` first")
 
-    # Kill vLLM via SSH (best-effort — instance may already be off)
-    cp = _gpu_ssh_run(gpu, "pkill -f 'vllm serve' 2>/dev/null || true", timeout=15)
+    # Stop ollama via SSH (best-effort — instance may already be off)
+    cp = _gpu_ssh_run(
+        gpu,
+        "systemctl stop ollama 2>/dev/null || pkill -f 'ollama serve' 2>/dev/null || true",
+        timeout=15,
+    )
     if cp.returncode == 0:
-        G.console.print("[yellow]vLLM stopped[/]")
+        G.console.print("[yellow]ollama stopped[/]")
     else:
-        G.console.print("[dim]SSH unreachable — skipping vLLM kill (instance likely already off)[/]")
+        G.console.print("[dim]SSH unreachable — skipping ollama stop (instance likely already off)[/]")
 
     if gpu.vast_instance_id and cfg.vast_api_key:
         vast = VastClient(cfg.vast_api_key)
@@ -928,7 +912,7 @@ def config_cmd() -> None:
 
 @gpu_app.command("up")
 def gpu_up_cmd() -> None:
-    """Start the Vast.ai instance, install vLLM, serve the model, print port-forward."""
+    """Start the Vast.ai instance, install ollama if missing, pull the model, print port-forward."""
     cmd_gpu_up()
 
 
@@ -940,7 +924,7 @@ def gpu_new_cmd() -> None:
 
 @gpu_app.command("down")
 def gpu_down_cmd() -> None:
-    """Kill vLLM and stop the Vast.ai instance via API."""
+    """Stop ollama and pause the Vast.ai instance via API."""
     cmd_gpu_down()
 
 
@@ -1162,7 +1146,7 @@ def dispatch_repl(line: str) -> None:
             "  project [slug]                    select/list projects\n"
             "  new [name]                        create new project\n"
             "  up / down                         start/stop GPU (legacy — needs config.json)\n"
-            "  gpu up / gpu down                 start instance, install vLLM, serve model\n"
+            "  gpu up / gpu down                 start instance, install ollama, pull model\n"
             "  tools list                        list all dynamic tools\n"
             "  tools run <name> [key=value ...]  run a dynamic tool directly\n"
             "  tools show <name>                 print tool source\n"

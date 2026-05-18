@@ -16,12 +16,14 @@ Phone (Termux / Linux)          VPS (Ubuntu 24.04, rootless podman)
        │ HTTP (OpenAI protocol)       │ staged code detonated here
        ▼                              │
   Vast.ai GPU cluster ─────────────▶ results back to CLI
-  vLLM endpoint
+  Ollama (OpenAI-compat)
 ```
 
 **One model, full authority, always:**
-There is a single model profile (`god`). It runs on whatever GPU cluster you rent — RTX 4090
-for smaller models, H100s for the heavy ones. No tier switching, no mode selection.
+There is a single model profile (`god`). Inference runs on whatever GPU cluster you rent —
+Ollama is installed there over SSH on first `michael gpu up`, the model is pulled by tag
+(default `qwen2.5:72b`, configurable via `gpu.model_repo`), and the endpoint is cached so
+subsequent runs skip straight to the model. No tier switching, no mode selection.
 
 **Four-header context package** (sent on every fresh LLM instance):
 - H1 — user's prompts verbatim, in order
@@ -62,7 +64,7 @@ bash bootstrap_termux.sh          # Termux
 
 # Initialise config
 michael init
-michael config                    # fill in vast_api_key, instance ID, served_model_name
+michael config                    # fill in vast_api_key, optionally gpu.model_repo
 ```
 
 ### 2. VPS (sandbox, run once as root)
@@ -82,18 +84,15 @@ michael ssh-test                  # verify roundtrip
 
 ### 3. Vast.ai GPU
 
-1. Rent an instance — any GPU that fits your model (RTX 4090 for ≤32B, H100s for larger).
-2. Note the instance ID from the Vast console.
-3. Add to `~/.michael/config.json`:
-   ```json
-   "models": {
-     "god": {
-       "vast_instance_id": "12345",
-       "served_model_name": "your-model-name"
-     }
-   }
-   ```
-4. Start inference: `michael gpu up` (SSHes to the GPU, installs vLLM if missing, launches it with the right flags, caches the endpoint).
+1. Rent an instance — any GPU with enough VRAM for your chosen model (default
+   `qwen2.5:72b` needs ~45 GB). Any PyTorch / CUDA template works; no on-start
+   command needed.
+2. Optionally set `gpu.model_repo` in `~/.michael/config.json` if you want a
+   model other than the default `qwen2.5:72b`. Any Ollama tag works
+   (`llama3.1:70b`, `qwen2.5-coder:32b`, etc.).
+3. Start inference: `michael gpu up`. On first run it prompts for the Vast SSH
+   command, installs Ollama (one curl line), pulls the model, and caches the
+   endpoint. Subsequent runs reuse the cached config.
 
 ### 4. First run
 
@@ -112,11 +111,10 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 |-----|-------------|
 | `vast_api_key` | Vast.ai console API key |
 | `default_model` | Profile to use (default: `god`) |
-| `models.god.vast_instance_id` | Numeric ID of the rented GPU instance |
-| `models.god.served_model_name` | Matches `--served-model-name` on vLLM |
-| `models.god.vllm_api_key` | Key vLLM was launched with (or empty) |
-| `models.god.vllm_internal_port` | Container-internal port (default 8000) |
+| `gpu.model_repo` | Ollama model tag, e.g. `qwen2.5:72b` |
+| `gpu.gpu_port` | Ollama OpenAI-compat port on the GPU (default `11434`) |
 | `models.god.request_timeout_s` | LLM request timeout in seconds |
+| `models.god.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
 | `vps.host` | VPS public IP/hostname (empty = no remote sandbox) |
 | `vps.user` | SSH user (default: `michael`) |
 | `vps.ssh_key_path` | Path to private key (default: `~/.ssh/id_ed25519`) |
@@ -129,7 +127,7 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `system_prompt` | Default system prompt for the agent loop |
 | `system_prompt_file` | If set, reads system prompt from this file |
 | `log_responses` | If true (default), stores full LLM responses in events.jsonl |
-| `boot_poll_s` | Poll interval while waiting for vLLM to come up |
+| `boot_poll_s` | Poll interval while waiting for the inference server |
 
 ---
 
@@ -143,7 +141,7 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael use <slug>` | Switch active project |
 | `michael current` | Print active project |
 | `michael config` | Open `config.json` in `$EDITOR` |
-| `michael gpu up` | SSH to GPU, install vLLM if missing, launch model, cache endpoint |
+| `michael gpu up` | SSH to GPU, install ollama if missing, pull model, cache endpoint |
 | `michael gpu new` | Swap to a new GPU — clear cached SSH/instance state, re-prompt, then `gpu up` |
 | `michael gpu down` | Pause the GPU instance |
 | `michael status` | Derived state from event log |
@@ -162,7 +160,7 @@ michael run refactor the parser to handle unicode edge cases
 ```
 
 1. Michael packages H1–H4 (your prompts, filesystem, tool history, protocol) and sends it with
-   your prompt to the vLLM endpoint.
+   your prompt to the model endpoint (ollama, OpenAI-compatible).
 2. The LLM iterates: reads files, patches code, runs the sandbox — up to `MAX_AGENT_TURNS`
    (60) turns. You see dim status lines and a y/n prompt before each confirmable tool runs.
 3. When the LLM calls `commit_changes(summary=…)`, Michael flushes every staged write,

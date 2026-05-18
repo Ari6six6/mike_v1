@@ -13,12 +13,10 @@ import michael.globals as G
 
 @dataclass
 class ModelProfile:
-    """One Vast.ai instance hosting one model behind a vLLM endpoint."""
+    """One model served behind an OpenAI-compatible endpoint (Ollama)."""
 
     vast_instance_id: str = ""
-    served_model_name: str = ""
-    vllm_internal_port: int = 8000
-    vllm_api_key: str = ""
+    served_model_name: str = ""  # the tag to send in API requests, e.g. "qwen2.5:72b"
     request_timeout_s: int = 120
     endpoint: Optional[str] = None
     enable_thinking: bool = False
@@ -47,16 +45,15 @@ class SandboxConfig:
 
 @dataclass
 class GpuConfig:
-    """Direct SSH + vLLM config for a rented GPU (A100 / etc.)."""
+    """Direct SSH + Ollama config for a rented GPU."""
 
     ssh_host: str = ""
     ssh_port: int = 22
     ssh_user: str = "root"
     ssh_key_path: str = "~/.ssh/id_ed25519"
     vast_instance_id: str = ""
-    model_repo: str = "Qwen/Qwen2.5-72B-Instruct-AWQ"
-    vllm_port: int = 8000
-    vllm_api_key: str = ""
+    model_repo: str = "qwen2.5:72b"  # Ollama tag, e.g. "qwen2.5:72b" or "llama3.1:70b"
+    gpu_port: int = 11434  # Ollama's default OpenAI-compatible port
 
 
 @dataclass
@@ -186,10 +183,10 @@ CONFIG_HELP: dict[str, str] = {
     "vast_api_key": "Vast.ai console API key.",
     "default_model": "Profile name to use (default: 'god').",
     "models.god.vast_instance_id": "Numeric ID of the rented GPU instance.",
-    "models.god.served_model_name": "Matches --served-model-name on vLLM.",
-    "models.god.vllm_api_key": "Key vLLM was launched with (or empty).",
-    "models.god.vllm_internal_port": "Container-internal port (default 8000).",
+    "models.god.served_model_name": "Model tag to send in API requests, e.g. 'qwen2.5:72b'. Auto-filled by `michael gpu up` from gpu.model_repo.",
     "models.god.request_timeout_s": "LLM request timeout (seconds).",
+    "gpu.model_repo": "Ollama model tag, e.g. 'qwen2.5:72b' or 'llama3.1:70b'.",
+    "gpu.gpu_port": "Ollama OpenAI-compat port on the GPU (default 11434).",
     "vps.host": "VPS public IP/hostname (empty = no remote sandbox).",
     "vps.user": "SSH user (default: michael).",
     "vps.ssh_key_path": "Path to private key (default: ~/.ssh/id_ed25519).",
@@ -202,6 +199,6 @@ CONFIG_HELP: dict[str, str] = {
     "system_prompt": "Default system prompt for the agent loop.",
     "system_prompt_file": "If set, read system prompt from this file.",
     "log_responses": "If true, log full LLM responses to events.jsonl.",
-    "boot_poll_s": "Poll interval while waiting for vLLM to come up.",
+    "boot_poll_s": "Poll interval while waiting for the inference server to come up.",
     "scripture_dir": "Path to scripture files (relative to repo root, default 'scripture').",
 }

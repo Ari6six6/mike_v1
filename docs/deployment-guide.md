@@ -168,23 +168,23 @@ ssh michael@<vps-ip> "cd /opt/project_michael && podman build -t michael-sandbox
 
 ## Phase 3 — Vast.ai: rent a GPU
 
-Michael drives vLLM over SSH — you do **not** need to configure an on-start command, an
-api-key, or a model in the Vast console. Just rent a GPU with a PyTorch-based template
-and stop here; Phase 5 (`michael gpu up`) installs vLLM, launches the model with the
-correct flags, and caches the endpoint.
+Michael drives Ollama over SSH — you do **not** need to configure an on-start command
+or anything else in the Vast console. Just rent a GPU with a PyTorch / CUDA template
+and stop here; Phase 5 (`michael gpu up`) installs Ollama with a curl one-liner,
+pulls the model, and caches the endpoint.
 
 ### 3.1 — Pick a GPU
 
-The default model is `Qwen/Qwen2.5-72B-Instruct-AWQ` (configured in `gpu.model_repo`),
-which needs ≥45 GB VRAM. Rent accordingly (A100 80 GB, H100, or A6000-class). If you
-want a different model, set `gpu.model_repo` in Phase 4 before running `gpu up`.
+The default model is `qwen2.5:72b` (configured in `gpu.model_repo`), which needs
+≥45 GB VRAM. Rent accordingly (A100 80 GB, H100, or A6000-class). If you want a
+different model, set `gpu.model_repo` in Phase 4 before running `gpu up` — any
+Ollama tag works (`llama3.1:70b`, `qwen2.5-coder:32b`, etc.).
 
 ### 3.2 — Rent
 
 1. Go to **console.vast.ai → Search**
 2. Filter by your target GPU
-3. Pick any vLLM-compatible PyTorch template (`vllm/vllm-openai`, the default PyTorch
-   templates, etc.). No on-start command needed.
+3. Pick any PyTorch / CUDA template. No on-start command needed.
 4. Click **Rent**
 
 ### 3.3 — Copy the SSH command
@@ -218,13 +218,13 @@ GPU SSH details are filled in for you by Phase 5 from the SSH command you paste.
     "host": "<vps-ip>"
   },
   "gpu": {
-    "model_repo": "Qwen/Qwen2.5-72B-Instruct-AWQ"
+    "model_repo": "qwen2.5:72b"
   }
 }
 ```
 
 Defaults for everything else (`vps.user=michael`, `vps.ssh_key_path=~/.ssh/id_ed25519`,
-`vps.workspace_dir=/home/michael/workspace`, `gpu.ssh_user=root`, `gpu.vllm_port=8000`)
+`vps.workspace_dir=/home/michael/workspace`, `gpu.ssh_user=root`, `gpu.gpu_port=11434`)
 match the bootstrap layout — override them only if your setup differs. Save and exit
 (`Ctrl+X` → `Y` → `Enter` in nano).
 
@@ -241,23 +241,29 @@ If it fails: re-check `vps.host`, `vps.user`, and that your SSH key is in
 
 ---
 
-## Phase 5 — Start the GPU and wait for vLLM
+## Phase 5 — Start the GPU and pull the model
 
 ```bash
 michael gpu up
 ```
 
-What happens:
-1. Michael SSHes into the GPU and checks if vLLM is installed; pip-installs it if missing
-2. Kills any stale `vllm serve` process and relaunches with the correct flags
-   (`--enable-auto-tool-choice --tool-call-parser hermes`, plus `--api-key` if you set one)
-3. Polls `/v1/models` every 30 s for up to 90 min, tailing `/tmp/vllm.log` so you see progress
-4. On success, caches `endpoint` and `served_model_name` in `~/.michael/config.json` and
-   prints the port-forward command to run in a second terminal
+On first run, Michael will prompt for the Vast SSH command (paste the one you copied
+in Phase 3.3). After that:
 
-**Expected total time:**
-- If the model is already cached on the Vast instance disk: ~3–6 minutes
-- If the model needs downloading from Hugging Face: 5–25 minutes depending on model size
+1. SSHes into the GPU and starts the Vast instance via the API
+2. Checks if Ollama is installed; runs `curl -fsSL https://ollama.com/install.sh | sh`
+   if missing (~10 s on a fresh PyTorch image)
+3. Starts the Ollama daemon (systemd if available, nohup fallback) and waits for the
+   endpoint to answer
+4. Checks if the model is already pulled; if not, runs `ollama pull <tag>` in the
+   background with progress streamed back via `/tmp/ollama_pull.log`
+5. Caches `endpoint` and `served_model_name` in `~/.michael/config.json` and prints
+   the SSH port-forward command to run in a second terminal
+
+**Expected total time on a fresh instance:**
+- Ollama install: ~10 s
+- First model pull: 5–20 minutes depending on Vast network and model size
+- Subsequent `gpu up` runs reuse the cached model on disk — seconds, not minutes
 
 When ready you'll see:
 ```
@@ -287,7 +293,7 @@ michael run hello, what can you do?
 
 What happens:
 1. Michael packages the four-header context (H1: your prompts, H2: filesystem snapshot,
-   H3: tool call history, H4: protocol bible) and sends it to vLLM
+   H3: tool call history, H4: protocol bible) and sends it to the Ollama endpoint
 2. The LLM iterates privately — you see dim status lines for each turn
 3. When the LLM calls `commit_changes(summary=…)`, staged writes are flushed to the project,
    the trash dir is updated for `michael undo`, and any detectable deliverable is installed
@@ -335,7 +341,7 @@ michael log --tail 50 # last 50 events
 
 ### `michael gpu up` times out (90 min)
 - Check the Vast console — is the instance actually running?
-- SSH into the Vast instance manually and inspect `/tmp/vllm.log` for the real error
+- SSH into the Vast instance manually and inspect `/tmp/ollama.log` (or `journalctl -u ollama`) and `/tmp/ollama_pull.log` for the real error
 - Confirm the model in `gpu.model_repo` fits in the rented VRAM
 - Confirm `nvidia-smi` works on the instance (the PyTorch template should make it work)
 
@@ -358,7 +364,7 @@ michael log --tail 50 # last 50 events
   run again with a tighter prompt to continue
 
 ### Vast.ai endpoint changes after restart
-- Run `michael gpu up` after each instance restart — it re-checks vLLM and re-caches the endpoint
+- Run `michael gpu up` after each instance restart — it re-checks Ollama and re-caches the endpoint
 - The old cached endpoint in `config.json` becomes invalid when the instance stops
 
 ---
