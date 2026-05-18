@@ -35,13 +35,14 @@ echo "==> [3/6] state directory"
 install -d -m 0700 "${HOME}/.michael"
 
 echo "==> [4/6] ssh key"
-install -d -m 0700 "${HOME}/.ssh"
 if [[ ! -f "${KEY_PATH}" ]]; then
-    ssh-keygen -t ed25519 -N "" -f "${KEY_PATH}" -C "michael-on-termux"
-    echo "    generated new ed25519 key at ${KEY_PATH}"
-else
-    echo "    ssh key already exists at ${KEY_PATH}"
+    echo "    ERROR: ssh key not found at ${KEY_PATH}" >&2
+    echo "    michael does not generate ssh keys. Create one yourself, e.g.:" >&2
+    echo "      ssh-keygen -t ed25519 -N '' -f \"${KEY_PATH}\" -C \"<label>\"" >&2
+    echo "    then re-run this bootstrap." >&2
+    exit 1
 fi
+echo "    using existing ssh key at ${KEY_PATH}"
 
 echo "==> [5/6] michael wrapper"
 WRAPPER="${PREFIX}/bin/michael"
