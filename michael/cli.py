@@ -309,16 +309,28 @@ def cmd_gpu_up() -> None:
     # ── Install vLLM if missing ──
     cp = _gpu_ssh_run(gpu, "python3 -c 'import vllm' 2>/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
-        G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
-        # Kick off pip in the background on the remote — decouples install time
-        # from this client's SSH session. If Termux dies, the install keeps going.
-        _gpu_ssh_run(
+        # Reattach to an in-flight install (from a previous gpu up that lost
+        # SSH) rather than racing a second pip against the same site-packages.
+        cp = _gpu_ssh_run(
             gpu,
-            "rm -f /tmp/vllm_install.exit && "
-            "nohup bash -c 'pip install vllm --upgrade > /tmp/vllm_install.log 2>&1; "
-            "echo $? > /tmp/vllm_install.exit' >/dev/null 2>&1 & echo started",
-            timeout=15,
+            "pgrep -f 'pip install vllm' >/dev/null && echo running || echo idle",
+            timeout=10,
         )
+        if "running" in cp.stdout:
+            G.console.print("[cyan]vLLM install already running on the GPU — attaching…[/]")
+        else:
+            G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
+            # Subshell + redirecting all three std streams (incl. stdin from /dev/null)
+            # is required so sshd doesn't wait for the orphaned job's fds to close.
+            _gpu_ssh_run(
+                gpu,
+                "rm -f /tmp/vllm_install.exit && "
+                "( nohup bash -c "
+                "'pip install vllm --upgrade > /tmp/vllm_install.log 2>&1; "
+                "echo $? > /tmp/vllm_install.exit' "
+                "> /dev/null 2>&1 < /dev/null & ) && echo started",
+                timeout=30,
+            )
         _max_install_s = 3600  # 1 hour
         _poll_s = 20
         _elapsed = 0
