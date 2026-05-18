@@ -322,11 +322,16 @@ def cmd_gpu_up() -> None:
             G.console.print("[cyan]Installing vLLM on the GPU (background; survives a dropped session)…[/]")
             # Subshell + redirecting all three std streams (incl. stdin from /dev/null)
             # is required so sshd doesn't wait for the orphaned job's fds to close.
+            # `pip cache purge` + `--no-cache-dir` defends against poisoned cache
+            # entries from prior interrupted installs (the "hash mismatch from
+            # requirements file" error is pip's own integrity check on stale
+            # partial downloads).
             _gpu_ssh_run(
                 gpu,
                 "rm -f /tmp/vllm_install.exit && "
                 "( nohup bash -c "
-                "'pip install vllm --upgrade > /tmp/vllm_install.log 2>&1; "
+                "'pip cache purge >/dev/null 2>&1; "
+                "pip install --no-cache-dir vllm --upgrade > /tmp/vllm_install.log 2>&1; "
                 "echo $? > /tmp/vllm_install.exit' "
                 "> /dev/null 2>&1 < /dev/null & ) && echo started",
                 timeout=30,
