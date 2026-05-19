@@ -339,7 +339,7 @@ def cmd_gpu_up() -> None:
         gpu,
         f"kill -0 {pid} 2>/dev/null && echo alive || "
         "(echo dead; echo '--- /tmp/ollama.log ---'; cat /tmp/ollama.log 2>/dev/null | head -30)",
-        timeout=10,
+        timeout=30,
     )
     if "alive" not in cp.stdout:
         raise G.MichaelError(
@@ -357,7 +357,7 @@ def cmd_gpu_up() -> None:
             gpu,
             f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
             f"&& echo ready || echo down",
-            timeout=10,
+            timeout=30,
         )
         if "ready" in cp.stdout:
             daemon_ready = True
