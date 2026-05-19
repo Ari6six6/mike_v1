@@ -132,7 +132,8 @@ def _gpu_ssh_run(
         return subprocess.run(
             _gpu_ssh_argv(gpu) + [cmd],
             capture_output=True,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
             check=False,
         )
