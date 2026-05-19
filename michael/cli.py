@@ -320,14 +320,28 @@ def cmd_gpu_up() -> None:
         G.console.print("[green]ollama installed[/]")
 
     # ── Ensure ollama daemon is running ──
-    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=30)
-    start_status = cp.stdout.strip()
-    first_line = start_status.split("\n", 1)[0]
-    if first_line == "failed":
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=20)
+    # Output is the backgrounded process's PID. If anything else, the launch failed.
+    pid = cp.stdout.strip().split("\n")[-1]
+    if not pid.isdigit():
         raise G.MichaelError(
-            f"ollama failed to launch on the GPU. Log:\n{start_status}"
+            f"ollama failed to launch (no PID returned)\n"
+            f"stdout: {cp.stdout.strip()!r}\nstderr: {cp.stderr.strip()!r}"
         )
-    G.console.print(f"[dim]ollama daemon: {first_line or 'started'}[/]")
+    G.console.print(f"[dim]ollama daemon started: pid={pid}[/]")
+
+    # Give the daemon a moment, then verify the process is still alive.
+    time.sleep(2)
+    cp = _gpu_ssh_run(
+        gpu,
+        f"kill -0 {pid} 2>/dev/null && echo alive || "
+        "(echo dead; echo '--- /tmp/ollama.log ---'; cat /tmp/ollama.log 2>/dev/null | head -30)",
+        timeout=10,
+    )
+    if "alive" not in cp.stdout:
+        raise G.MichaelError(
+            f"ollama died shortly after launch (pid={pid}):\n{cp.stdout.strip()}"
+        )
 
     # ── Wait for the endpoint to answer ──
     _max_wait_s = 60

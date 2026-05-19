@@ -150,39 +150,35 @@ def gpu_port_forward_cmd(gpu: GpuConfig) -> str:
 
 
 def _start_ollama_cmd(gpu: GpuConfig) -> str:
-    """Start the ollama daemon. Uses systemd if available, else nohup-detached.
+    """Background ollama serve detached from the SSH session, print its PID.
 
-    Returns shell that prints exactly one of:
-      systemd        — already running under systemd
-      started <pid>  — newly launched, process alive after 1s
-      failed         — followed by the contents of /tmp/ollama.log
+    Three statements, semicolon-separated, no chaining cleverness:
+      1. pkill any existing ollama serve (ignored if none)
+      2. touch the log so we can prove the redirect ran even if ollama crashes
+      3. nohup the daemon with full std-stream redirection, echo the PID
+    The caller is responsible for verifying the PID is still alive after a
+    short sleep — that's done in a separate SSH call so SSH session timing
+    can't affect the verification.
     """
     return (
-        "if systemctl is-active --quiet ollama 2>/dev/null; then "
-        "  echo systemd; "
-        "else "
-        "  pkill -f 'ollama serve' 2>/dev/null; "
-        "  : > /tmp/ollama.log; "
-        f"  OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
-        "  nohup ollama serve >> /tmp/ollama.log 2>&1 < /dev/null & "
-        "  PID=$!; "
-        "  sleep 2; "
-        "  if kill -0 $PID 2>/dev/null; then "
-        "    echo started $PID; "
-        "  else "
-        "    echo failed; "
-        "    cat /tmp/ollama.log; "
-        "  fi; "
-        "fi"
+        "pkill -f 'ollama serve' 2>/dev/null; "
+        "touch /tmp/ollama.log; "
+        f"OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
+        "nohup ollama serve >/tmp/ollama.log 2>&1 </dev/null & "
+        "echo $!"
     )
 
 
 def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None:
     """Restart the ollama daemon on the GPU and poll until ready."""
     G.console.print("[yellow]restarting ollama on GPU...[/]")
-    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=30)
-    if "failed" in cp.stdout.split("\n")[0]:
-        raise G.MichaelError(f"ollama failed to start:\n{cp.stdout.strip()}")
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=20)
+    pid = cp.stdout.strip().split("\n")[-1]
+    if not pid.isdigit():
+        raise G.MichaelError(
+            f"ollama failed to launch (no PID returned)\n"
+            f"stdout: {cp.stdout.strip()!r}\nstderr: {cp.stderr.strip()!r}"
+        )
     elapsed = 0
     while elapsed < poll_timeout_s:
         time.sleep(5)
