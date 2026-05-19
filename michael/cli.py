@@ -321,7 +321,13 @@ def cmd_gpu_up() -> None:
 
     # ── Ensure ollama daemon is running ──
     cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=30)
-    G.console.print(f"[dim]ollama daemon: {cp.stdout.strip() or 'started'}[/]")
+    start_status = cp.stdout.strip()
+    first_line = start_status.split("\n", 1)[0]
+    if first_line == "failed":
+        raise G.MichaelError(
+            f"ollama failed to launch on the GPU. Log:\n{start_status}"
+        )
+    G.console.print(f"[dim]ollama daemon: {first_line or 'started'}[/]")
 
     # ── Wait for the endpoint to answer ──
     _max_wait_s = 60
@@ -340,9 +346,18 @@ def cmd_gpu_up() -> None:
             daemon_ready = True
             break
     if not daemon_ready:
-        tail = _gpu_ssh_run(gpu, "tail -20 /tmp/ollama.log 2>/dev/null", timeout=10).stdout
+        # Pull everything we can to diagnose: log, process list, port state.
+        diag = _gpu_ssh_run(
+            gpu,
+            "echo '--- /tmp/ollama.log ---'; cat /tmp/ollama.log 2>&1; "
+            "echo '--- ollama processes ---'; ps -ef | grep -i ollama | grep -v grep; "
+            "echo '--- port ---'; ss -tlnp 2>/dev/null | grep "
+            f"{gpu.gpu_port} || netstat -tlnp 2>/dev/null | grep {gpu.gpu_port} "
+            "|| echo '(nothing listening)'",
+            timeout=15,
+        ).stdout
         raise G.MichaelError(
-            f"ollama daemon did not become ready within {_max_wait_s}s\n{tail.strip()}"
+            f"ollama daemon did not become ready within {_max_wait_s}s\n{diag.strip()}"
         )
 
     # ── Pull the model if not already present ──

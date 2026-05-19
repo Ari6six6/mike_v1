@@ -150,28 +150,39 @@ def gpu_port_forward_cmd(gpu: GpuConfig) -> str:
 
 
 def _start_ollama_cmd(gpu: GpuConfig) -> str:
-    """Start the ollama daemon. Tries systemd first, falls back to nohup."""
+    """Start the ollama daemon. Uses systemd if available, else nohup-detached.
+
+    Returns shell that prints exactly one of:
+      systemd        — already running under systemd
+      started <pid>  — newly launched, process alive after 1s
+      failed         — followed by the contents of /tmp/ollama.log
+    """
     return (
-        "systemctl is-active --quiet ollama 2>/dev/null && echo systemd || "
-        "( pkill -f 'ollama serve' 2>/dev/null; "
-        f"OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
-        "nohup ollama serve > /tmp/ollama.log 2>&1 < /dev/null & disown ) "
-        "&& echo started"
+        "if systemctl is-active --quiet ollama 2>/dev/null; then "
+        "  echo systemd; "
+        "else "
+        "  pkill -f 'ollama serve' 2>/dev/null; "
+        "  : > /tmp/ollama.log; "
+        f"  OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
+        "  nohup ollama serve >> /tmp/ollama.log 2>&1 < /dev/null & "
+        "  PID=$!; "
+        "  sleep 2; "
+        "  if kill -0 $PID 2>/dev/null; then "
+        "    echo started $PID; "
+        "  else "
+        "    echo failed; "
+        "    cat /tmp/ollama.log; "
+        "  fi; "
+        "fi"
     )
 
 
 def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None:
     """Restart the ollama daemon on the GPU and poll until ready."""
     G.console.print("[yellow]restarting ollama on GPU...[/]")
-    # systemctl restart is the clean path; falls back to pkill + nohup
-    _gpu_ssh_run(
-        gpu,
-        "systemctl restart ollama 2>/dev/null || "
-        "( pkill -f 'ollama serve' 2>/dev/null; sleep 1; "
-        f"OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
-        "nohup ollama serve > /tmp/ollama.log 2>&1 < /dev/null & disown )",
-        timeout=20,
-    )
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=30)
+    if "failed" in cp.stdout.split("\n")[0]:
+        raise G.MichaelError(f"ollama failed to start:\n{cp.stdout.strip()}")
     elapsed = 0
     while elapsed < poll_timeout_s:
         time.sleep(5)
