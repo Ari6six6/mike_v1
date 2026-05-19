@@ -126,7 +126,7 @@ def _gpu_ssh_argv(gpu: GpuConfig) -> list[str]:
 
 
 def _gpu_ssh_run(
-    gpu: GpuConfig, cmd: str, *, timeout: int = 30
+    gpu: GpuConfig, cmd: str, *, timeout: int = 60
 ) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
@@ -172,7 +172,7 @@ def _start_ollama_cmd(gpu: GpuConfig) -> str:
 def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None:
     """Restart the ollama daemon on the GPU and poll until ready."""
     G.console.print("[yellow]restarting ollama on GPU...[/]")
-    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=20)
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
         raise G.MichaelError(
@@ -187,7 +187,7 @@ def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None
             gpu,
             f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
             f"&& echo ready || echo down",
-            timeout=30,
+            timeout=60,
         )
         if "ready" in cp.stdout:
             G.console.print("[green]ollama is ready[/]")

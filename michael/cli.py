@@ -276,7 +276,7 @@ def cmd_gpu_up() -> None:
                 time.sleep(_poll_s)
                 _elapsed += _poll_s
                 try:
-                    cp = _gpu_ssh_run(gpu, "echo ok", timeout=25)
+                    cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
                     if cp.returncode == 0:
                         booted = True
                         break
@@ -300,7 +300,7 @@ def cmd_gpu_up() -> None:
     else:
         # ── Verify connectivity (no API, assume already running) ──
         G.console.print(f"[dim]connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
-        cp = _gpu_ssh_run(gpu, "echo ok", timeout=20)
+        cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
         if cp.returncode != 0:
             raise G.MichaelError(
                 f"GPU unreachable: {cp.stderr.strip()[:200]}\n"
@@ -314,7 +314,7 @@ def cmd_gpu_up() -> None:
         cp = _gpu_ssh_run(
             gpu,
             "curl -fsSL https://ollama.com/install.sh | sh",
-            timeout=120,
+            timeout=180,
         )
         if cp.returncode != 0:
             raise G.MichaelError(
@@ -323,7 +323,7 @@ def cmd_gpu_up() -> None:
         G.console.print("[green]ollama installed[/]")
 
     # ── Ensure ollama daemon is running ──
-    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=20)
+    cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=60)
     # Output is the backgrounded process's PID. If anything else, the launch failed.
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
@@ -339,7 +339,7 @@ def cmd_gpu_up() -> None:
         gpu,
         f"kill -0 {pid} 2>/dev/null && echo alive || "
         "(echo dead; echo '--- /tmp/ollama.log ---'; cat /tmp/ollama.log 2>/dev/null | head -30)",
-        timeout=30,
+        timeout=60,
     )
     if "alive" not in cp.stdout:
         raise G.MichaelError(
@@ -357,7 +357,7 @@ def cmd_gpu_up() -> None:
             gpu,
             f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
             f"&& echo ready || echo down",
-            timeout=30,
+            timeout=60,
         )
         if "ready" in cp.stdout:
             daemon_ready = True
@@ -371,7 +371,7 @@ def cmd_gpu_up() -> None:
             "echo '--- port ---'; ss -tlnp 2>/dev/null | grep "
             f"{gpu.gpu_port} || netstat -tlnp 2>/dev/null | grep {gpu.gpu_port} "
             "|| echo '(nothing listening)'",
-            timeout=15,
+            timeout=60,
         ).stdout
         raise G.MichaelError(
             f"ollama daemon did not become ready within {_max_wait_s}s\n{diag.strip()}"
@@ -382,7 +382,7 @@ def cmd_gpu_up() -> None:
         gpu,
         f"ollama list 2>/dev/null | awk 'NR>1 {{print $1}}' | grep -Fxq {gpu.model_repo!r} "
         f"&& echo present || echo missing",
-        timeout=15,
+        timeout=60,
     )
     if "missing" in cp.stdout:
         G.console.print(f"[cyan]Pulling model {gpu.model_repo} (this can take a while)…[/]")
@@ -395,7 +395,7 @@ def cmd_gpu_up() -> None:
             f"'ollama pull {gpu.model_repo} > /tmp/ollama_pull.log 2>&1; "
             "echo $? > /tmp/ollama_pull.exit' "
             "> /dev/null 2>&1 < /dev/null & ) && echo started",
-            timeout=15,
+            timeout=60,
         )
         _max_pull_s = 3600  # 1 hour cap for the model pull
         _poll_s = 15
@@ -404,14 +404,14 @@ def cmd_gpu_up() -> None:
             time.sleep(_poll_s)
             _elapsed += _poll_s
             cp = _gpu_ssh_run(
-                gpu, "cat /tmp/ollama_pull.exit 2>/dev/null || echo running", timeout=45
+                gpu, "cat /tmp/ollama_pull.exit 2>/dev/null || echo running", timeout=180
             )
             done = cp.stdout.strip()
             if done and done != "running":
                 rc = int(done) if done.lstrip("-").isdigit() else 1
                 if rc != 0:
                     tail = _gpu_ssh_run(
-                        gpu, "tail -30 /tmp/ollama_pull.log 2>/dev/null", timeout=10
+                        gpu, "tail -30 /tmp/ollama_pull.log 2>/dev/null", timeout=60
                     ).stdout
                     raise G.MichaelError(
                         f"ollama pull failed (rc={rc}):\n{tail.strip()}"
@@ -419,7 +419,7 @@ def cmd_gpu_up() -> None:
                 G.console.print(f"[green]model {gpu.model_repo} pulled[/]")
                 break
             tail = _ANSI.sub("", _gpu_ssh_run(
-                gpu, "tail -1 /tmp/ollama_pull.log 2>/dev/null", timeout=45
+                gpu, "tail -1 /tmp/ollama_pull.log 2>/dev/null", timeout=180
             ).stdout.strip().replace("\r", " "))
             G.console.print(
                 f"[dim]· {_elapsed}s — {(tail[:120] + '…') if len(tail) > 120 else (tail or 'starting pull…')}[/]"
@@ -486,7 +486,7 @@ def cmd_gpu_down() -> None:
     cp = _gpu_ssh_run(
         gpu,
         "systemctl stop ollama 2>/dev/null || pkill -x ollama 2>/dev/null || true",
-        timeout=15,
+        timeout=60,
     )
     if cp.returncode == 0:
         G.console.print("[yellow]ollama stopped[/]")
