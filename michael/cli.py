@@ -482,7 +482,7 @@ def cmd_gpu_down() -> None:
     # Stop ollama via SSH (best-effort — instance may already be off)
     cp = _gpu_ssh_run(
         gpu,
-        "systemctl stop ollama 2>/dev/null || pkill -f 'ollama serve' 2>/dev/null || true",
+        "systemctl stop ollama 2>/dev/null || pkill -x ollama 2>/dev/null || true",
         timeout=15,
     )
     if cp.returncode == 0:

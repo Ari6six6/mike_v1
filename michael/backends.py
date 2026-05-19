@@ -161,7 +161,7 @@ def _start_ollama_cmd(gpu: GpuConfig) -> str:
     can't affect the verification.
     """
     return (
-        "pkill -f 'ollama serve' 2>/dev/null; "
+        "pkill -x ollama 2>/dev/null; "
         "touch /tmp/ollama.log; "
         f"OLLAMA_HOST=0.0.0.0:{gpu.gpu_port} "
         "nohup ollama serve >/tmp/ollama.log 2>&1 </dev/null & "
