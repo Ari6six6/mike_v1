@@ -17,6 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -1145,7 +1146,7 @@ def repl() -> None:
         try:
             dispatch_repl(line)
         except G.MichaelError as e:
-            G.err.print(f"michael: {e}")
+            G.err.print(f"michael: {escape(str(e))}")
         except typer.Abort:
             G.err.print("aborted")
         except KeyboardInterrupt:
@@ -1258,7 +1259,7 @@ def main() -> None:
         else:
             app()
     except G.MichaelError as e:
-        G.err.print(f"michael: {e}")
+        G.err.print(f"michael: {escape(str(e))}")
         sys.exit(2)
     except subprocess.CalledProcessError as e:
         G.err.print(f"command failed (exit {e.returncode})")
