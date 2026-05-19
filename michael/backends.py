@@ -116,7 +116,7 @@ def _gpu_ssh_argv(gpu: GpuConfig) -> list[str]:
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=15",
+        "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
         "-i", os.path.expanduser(gpu.ssh_key_path),
