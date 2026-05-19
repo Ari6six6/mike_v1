@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -20,6 +21,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 import michael.globals as G
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 from michael.agent import _run_agent_loop
 from michael.backends import (
     VastClient,
@@ -401,7 +404,7 @@ def cmd_gpu_up() -> None:
             time.sleep(_poll_s)
             _elapsed += _poll_s
             cp = _gpu_ssh_run(
-                gpu, "cat /tmp/ollama_pull.exit 2>/dev/null || echo running", timeout=10
+                gpu, "cat /tmp/ollama_pull.exit 2>/dev/null || echo running", timeout=45
             )
             done = cp.stdout.strip()
             if done and done != "running":
@@ -415,9 +418,9 @@ def cmd_gpu_up() -> None:
                     )
                 G.console.print(f"[green]model {gpu.model_repo} pulled[/]")
                 break
-            tail = _gpu_ssh_run(
-                gpu, "tail -1 /tmp/ollama_pull.log 2>/dev/null", timeout=10
-            ).stdout.strip().replace("\r", " ")
+            tail = _ANSI.sub("", _gpu_ssh_run(
+                gpu, "tail -1 /tmp/ollama_pull.log 2>/dev/null", timeout=45
+            ).stdout.strip().replace("\r", " "))
             G.console.print(
                 f"[dim]· {_elapsed}s — {(tail[:120] + '…') if len(tail) > 120 else (tail or 'starting pull…')}[/]"
             )
