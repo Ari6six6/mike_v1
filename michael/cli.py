@@ -364,6 +364,14 @@ def cmd_gpu_up() -> None:
             daemon_ready = True
             break
     if not daemon_ready:
+        # Check for disk-full first — it's the most common silent killer.
+        disk = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $5}'", timeout=60).stdout.strip()
+        if disk.rstrip("%").isdigit() and int(disk.rstrip("%")) >= 95:
+            raise G.MichaelError(
+                f"GPU disk is full ({disk} used). Free space and retry:\n"
+                f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
+                f"'rm -rf /root/.ollama/models/ && df -h /'"
+            )
         # Pull everything we can to diagnose: log, process list, port state.
         diag = _gpu_ssh_run(
             gpu,
@@ -386,6 +394,15 @@ def cmd_gpu_up() -> None:
         timeout=60,
     )
     if "missing" in cp.stdout:
+        disk = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $4}'", timeout=60).stdout.strip()
+        if disk.isdigit() and int(disk) < 55_000_000:  # <55 GB free
+            avail_gb = int(disk) // 1_000_000
+            raise G.MichaelError(
+                f"Not enough disk space to pull {gpu.model_repo} "
+                f"(only ~{avail_gb} GB free, need ~55 GB). Free space and retry:\n"
+                f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
+                f"'rm -rf /root/.ollama/models/ && df -h /'"
+            )
         G.console.print(f"[cyan]Pulling model {gpu.model_repo} (this can take a while)…[/]")
         # Background the pull so a flaky SSH session can't abort it; poll a marker
         # file the same way we used to for pip.
