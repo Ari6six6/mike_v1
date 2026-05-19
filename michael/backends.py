@@ -187,7 +187,7 @@ def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None
             gpu,
             f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
             f"&& echo ready || echo down",
-            timeout=10,
+            timeout=30,
         )
         if "ready" in cp.stdout:
             G.console.print("[green]ollama is ready[/]")
