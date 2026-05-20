@@ -9,6 +9,7 @@ from typing import Any
 import michael.globals as G
 from michael.backends import (
     LocalPodmanBackend,
+    _close_tunnel,
     _ensure_tunnel,
     _ping_endpoint,
     _require_endpoint,
@@ -57,6 +58,17 @@ def _load_dynamic_tools(project_path: str) -> list[dict[str, Any]]:
             except Exception as exc:
                 G.err.print(f"[dim]dynamic tool load failed ({py_file.name}): {exc}[/]")
     return list(seen.values())
+
+
+def _is_conn_refused(exc: Exception) -> bool:
+    for e in (exc, getattr(exc, '__cause__', None)):
+        if e is None:
+            continue
+        if isinstance(e, ConnectionRefusedError):
+            return True
+        if isinstance(e, OSError) and getattr(e, 'errno', None) == 111:
+            return True
+    return False
 
 
 def _probe_deliverable(project: Project, run_cmd: str) -> tuple[bool, str]:
@@ -138,14 +150,24 @@ def _run_agent_loop(
     try:
         for turn in range(1, G.MAX_AGENT_TURNS + 1):
             G.console.print(f"[dim]· turn {turn}[/]")
-            resp = client.chat.completions.create(
-                model=profile.served_model_name,
-                messages=messages,
-                tools=all_tools,
-                tool_choice="auto",
-                stream=False,
-                timeout=float(profile.request_timeout_s),
-            )
+            for _attempt in range(2):
+                try:
+                    resp = client.chat.completions.create(
+                        model=profile.served_model_name,
+                        messages=messages,
+                        tools=all_tools,
+                        tool_choice="auto",
+                        stream=False,
+                        timeout=float(profile.request_timeout_s),
+                    )
+                    break
+                except Exception as _conn_exc:
+                    if _attempt == 0 and _is_conn_refused(_conn_exc) and cfg.gpu.ssh_host:
+                        G.console.print("[yellow]LLM connection lost — reconnecting tunnel...[/]")
+                        _close_tunnel()
+                        _ensure_tunnel(cfg.gpu)
+                    else:
+                        raise
             choice = resp.choices[0]
             content = choice.content or ""
 
