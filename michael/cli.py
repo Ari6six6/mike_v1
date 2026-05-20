@@ -414,10 +414,9 @@ def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
             ssh_ok = False
         if not ssh_ok:
             raise G.MichaelError(
-                f"SSH connection timed out or was refused ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
-                f"Add your public key to this instance in the Vast.ai console:\n"
-                f"  Account → SSH Keys → paste contents of ~/.ssh/id_ed25519.pub\n\n"
-                f"Then run `michael gpu` again."
+                f"SSH unreachable ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
+                f"Try manually: ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host}\n"
+                f"If that fails, make sure your key is in Vast.ai → Account → SSH Keys."
             )
         return
 
@@ -481,19 +480,42 @@ def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
 
 def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
     """Install ollama, start daemon, pull model, save endpoint, print port-forward."""
-    # ── Verify SSH before doing anything else ──
-    G.console.print(f"[dim]testing SSH connection to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
-    try:
-        cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
-        ssh_ok = cp.returncode == 0
-    except G.MichaelError:
-        ssh_ok = False
+    # ── Check local SSH key exists before attempting connection ──
+    key_path = pathlib.Path(gpu.ssh_key_path).expanduser()
+    if not key_path.exists():
+        raise G.MichaelError(
+            f"SSH private key not found: {key_path}\n\n"
+            f"Generate one with:  ssh-keygen -t ed25519\n"
+            f"Then add the public key (~/.ssh/id_ed25519.pub) to your Vast.ai account:\n"
+            f"  console.vast.ai → Account → SSH Keys"
+        )
+
+    # ── Wait for SSH — instance may still be booting ──
+    G.console.print(f"[dim]waiting for SSH on {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+    _ssh_retries = 6
+    _ssh_wait = 15
+    ssh_ok = False
+    last_err = ""
+    for attempt in range(1, _ssh_retries + 1):
+        try:
+            cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
+            if cp.returncode == 0:
+                ssh_ok = True
+                break
+            last_err = (cp.stderr or "").strip()[:200]
+        except G.MichaelError as e:
+            last_err = str(e)[:200]
+        G.console.print(f"[dim]· attempt {attempt}/{_ssh_retries} — {last_err[:80] or 'no response'} (retry in {_ssh_wait}s)[/]")
+        time.sleep(_ssh_wait)
     if not ssh_ok:
         raise G.MichaelError(
-            f"SSH connection timed out or was refused ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
-            f"Add your public key to this instance in the Vast.ai console:\n"
-            f"  Account → SSH Keys → paste contents of ~/.ssh/id_ed25519.pub\n\n"
-            f"Then run `michael gpu` again."
+            f"SSH unreachable after {_ssh_retries} attempts ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n"
+            f"Last error: {last_err}\n\n"
+            f"Things to check:\n"
+            f"  1. Your SSH public key is saved in Vast.ai → Account → SSH Keys\n"
+            f"     (paste contents of {key_path}.pub)\n"
+            f"  2. Try manually:  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host}\n"
+            f"  3. If that works, run `michael gpu` again."
         )
 
     # ── Install ollama if missing ──
