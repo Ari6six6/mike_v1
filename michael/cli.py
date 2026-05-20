@@ -296,19 +296,20 @@ def _select_vast_instance(cfg: "Config", gpu: "GpuConfig") -> bool:
         return False
 
     inst = instances[choice - 1]
-    ssh_port = inst.get("ssh_port")
-    if not ssh_port:
-        G.console.print("[dim]Instance API response missing ssh_port — falling back to manual entry[/]")
-        return False
-
     gpu.vast_instance_id = str(inst["id"])
-    gpu.ssh_host = inst.get("public_ipaddr") or inst.get("ssh_host") or ""
-    gpu.ssh_port = int(ssh_port)
-    gpu.ssh_user = inst.get("ssh_user") or "root"
+    G.console.print(f"[green]Instance {gpu.vast_instance_id} selected.[/]")
+
+    # Vast.ai API ssh_port is unreliable — always get exact details from the console command
     G.console.print(
-        f"[green]Selected instance {gpu.vast_instance_id}[/] "
-        f"({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port})"
+        "[bold cyan]Paste the SSH command from the instance page[/] "
+        "[dim](either the direct or relay one — e.g. ssh -p 13182 root@1.2.3.4)[/]"
     )
+    ssh_str = typer.prompt("SSH command").strip()
+    user, host, port = parse_vast_ssh_cmd(ssh_str)
+    gpu.ssh_user = user
+    gpu.ssh_host = host
+    gpu.ssh_port = port
+    G.console.print(f"[dim]connecting as {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}[/]")
     return True
 
 
@@ -324,7 +325,7 @@ def _manual_ssh_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     gpu.ssh_host = host
     gpu.ssh_port = port
 
-    if cfg.vast_api_key:
+    if cfg.vast_api_key and not gpu.vast_instance_id:
         try:
             vast = VastClient(cfg.vast_api_key)
             for inst in vast.list():
