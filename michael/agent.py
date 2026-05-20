@@ -31,6 +31,8 @@ from michael.tools import (
 )
 from michael.utils import build_header, load_scripture
 
+_MAX_TOOL_RESULT_CHARS = 8_000
+
 
 def _load_dynamic_tools(project_path: str) -> list[dict[str, Any]]:
     """Load tool schemas from the global toolbox and the project-local tools/ dir.
@@ -218,6 +220,8 @@ def _run_agent_loop(
                     messages.append({"role": "tool", "tool_call_id": tc.id,
                                      "content": "Changes committed."})
                 else:
+                    if len(result) > _MAX_TOOL_RESULT_CHARS:
+                        result = result[:_MAX_TOOL_RESULT_CHARS] + f"\n… [truncated {len(result) - _MAX_TOOL_RESULT_CHARS} chars]"
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
             if committed:
