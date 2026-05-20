@@ -1383,8 +1383,7 @@ def dispatch_tool_call(
         "summary": f"{_summary_for(name, final_args)} → {first}",
         "result_chars": len(result),
     }
-    if name in ("run_in_sandbox", "run_shell"):
-        payload["brief_result"] = result[:600]
+    payload["brief_result"] = result[:600]
     append_event("tool.executed", payload, project=project)
     return result
 
