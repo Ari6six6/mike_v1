@@ -52,7 +52,7 @@ class GpuConfig:
     ssh_user: str = "root"
     ssh_key_path: str = "~/.ssh/id_ed25519"
     vast_instance_id: str = ""
-    model_repo: str = "qwen2.5:72b"  # Ollama tag, e.g. "qwen2.5:72b" or "llama3.1:70b"
+    model_repo: str = "qwen2.5:72b"  # Ollama tag; also supported: "qwen3:32b"
     gpu_port: int = 11434  # Ollama's default OpenAI-compatible port
 
 

@@ -70,8 +70,11 @@ app = typer.Typer(
     help="michael — air-gapped AI control loop",
 )
 
-gpu_app = typer.Typer(help="GPU instance management (Ollama).")
+gpu_app = typer.Typer(help="GPU instance management (Ollama).", invoke_without_command=True)
 app.add_typer(gpu_app, name="gpu")
+
+SUPPORTED_MODELS = ["qwen2.5:72b", "qwen3:32b"]
+_MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22}
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
 app.add_typer(tools_app, name="tools")
@@ -226,88 +229,227 @@ def cmd_config() -> None:
     G.console.print("[green]config saved[/]")
 
 
-def cmd_gpu_up() -> None:
-    cfg = Config.load()
-    gpu = cfg.gpu
+def _prompt_model_selection(current: str) -> str:
+    """Interactive numbered menu for model selection. Returns the chosen tag."""
+    _labels = {
+        "qwen2.5:72b": "large instruct, ~45 GB VRAM",
+        "qwen3:32b": "coder, ~20 GB VRAM",
+    }
+    G.console.print("\n[bold]Available models:[/]")
+    for i, tag in enumerate(SUPPORTED_MODELS, 1):
+        marker = " [green]← current[/]" if tag == current else ""
+        G.console.print(f"  [cyan]{i}.[/] {tag}  [dim]({_labels.get(tag, '')})[/]{marker}")
 
-    # ── First-time setup: read SSH string from Vast.ai console ──
-    if not gpu.ssh_host:
+    default_idx = SUPPORTED_MODELS.index(current) + 1 if current in SUPPORTED_MODELS else 1
+    raw = typer.prompt(f"Model", default=str(default_idx)).strip()
+    try:
+        idx = int(raw)
+        if 1 <= idx <= len(SUPPORTED_MODELS):
+            return SUPPORTED_MODELS[idx - 1]
+    except ValueError:
+        if raw in SUPPORTED_MODELS:
+            return raw
+    G.console.print(f"[yellow]invalid choice, keeping {current or SUPPORTED_MODELS[0]}[/]")
+    return current or SUPPORTED_MODELS[0]
+
+
+def _select_vast_instance(cfg: "Config", gpu: "GpuConfig") -> bool:
+    """List Vast.ai instances and let user pick one. Populates gpu in-place.
+
+    Returns True on success, False if user chose manual entry or API unavailable.
+    """
+    if not cfg.vast_api_key:
+        return False
+    try:
+        vast = VastClient(cfg.vast_api_key)
+        instances = vast.list()
+        vast.close()
+    except G.MichaelError as e:
+        G.console.print(f"[dim]Vast.ai API unavailable ({e}) — falling back to manual SSH entry[/]")
+        return False
+
+    if not instances:
         G.console.print(
-            "[bold cyan]Paste the SSH command from your Vast.ai console[/] "
-            "[dim](e.g. ssh root@1.2.3.4 -p 10022)[/]"
+            "[dim]No instances found on Vast.ai — rent one from the console, then re-run `michael gpu`.[/]"
         )
-        ssh_str = typer.prompt("SSH command").strip()
-        user, host, port = parse_vast_ssh_cmd(ssh_str)
-        gpu.ssh_user = user
-        gpu.ssh_host = host
-        gpu.ssh_port = port
+        return False
 
-        # Try to auto-discover the instance ID from the Vast.ai API
-        if cfg.vast_api_key:
-            try:
-                vast = VastClient(cfg.vast_api_key)
-                for inst in vast.list():
-                    if inst.get("ssh_host") == host or inst.get("public_ipaddr") == host:
-                        gpu.vast_instance_id = str(inst["id"])
-                        G.console.print(
-                            f"[dim]auto-detected instance id: {gpu.vast_instance_id}[/]"
-                        )
-                        break
-                vast.close()
-            except G.MichaelError:
-                pass
+    table = Table(title="Vast.ai Instances", border_style="cyan")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("ID", style="bold")
+    table.add_column("GPU")
+    table.add_column("Status")
+    table.add_column("IP / Host")
+    for i, inst in enumerate(instances, 1):
+        gpu_label = f"{inst.get('num_gpus', 1)}× {inst.get('gpu_name') or '?'}"
+        ip = inst.get("public_ipaddr") or inst.get("ssh_host") or "?"
+        status = inst.get("actual_status") or inst.get("status") or "?"
+        table.add_row(str(i), str(inst.get("id", "?")), gpu_label, status, ip)
+    G.console.print(table)
 
-        cfg.gpu = gpu
-        cfg.save()
-        G.console.print(f"[green]GPU config saved[/] ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port})")
+    raw = typer.prompt(f"Select instance [1-{len(instances)}] or 0 for manual SSH entry", default="1").strip()
+    try:
+        choice = int(raw)
+    except ValueError:
+        choice = 0
+    if choice < 1 or choice > len(instances):
+        return False
 
-    # ── Power on via Vast.ai API if we have the instance ID ──
-    if gpu.vast_instance_id and cfg.vast_api_key:
-        G.console.print(f"[dim]starting instance {gpu.vast_instance_id} via Vast.ai API…[/]")
+    inst = instances[choice - 1]
+    ssh_port = inst.get("ssh_port")
+    if not ssh_port:
+        G.console.print("[dim]Instance API response missing ssh_port — falling back to manual entry[/]")
+        return False
+
+    gpu.vast_instance_id = str(inst["id"])
+    gpu.ssh_host = inst.get("public_ipaddr") or inst.get("ssh_host") or ""
+    gpu.ssh_port = int(ssh_port)
+    gpu.ssh_user = inst.get("ssh_user") or "root"
+    G.console.print(
+        f"[green]Selected instance {gpu.vast_instance_id}[/] "
+        f"({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port})"
+    )
+    return True
+
+
+def _manual_ssh_setup(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Prompt user for SSH command and auto-detect instance ID from API."""
+    G.console.print(
+        "[bold cyan]Paste the SSH command from your Vast.ai console[/] "
+        "[dim](e.g. ssh root@1.2.3.4 -p 10022)[/]"
+    )
+    ssh_str = typer.prompt("SSH command").strip()
+    user, host, port = parse_vast_ssh_cmd(ssh_str)
+    gpu.ssh_user = user
+    gpu.ssh_host = host
+    gpu.ssh_port = port
+
+    if cfg.vast_api_key:
         try:
             vast = VastClient(cfg.vast_api_key)
-            vast.start(gpu.vast_instance_id)
+            for inst in vast.list():
+                if inst.get("ssh_host") == host or inst.get("public_ipaddr") == host:
+                    gpu.vast_instance_id = str(inst["id"])
+                    G.console.print(f"[dim]auto-detected instance id: {gpu.vast_instance_id}[/]")
+                    break
             vast.close()
-            G.console.print("[dim]start requested — waiting for SSH to come up…[/]")
-            _poll_s = 10
-            _max_boot = 300
-            _elapsed = 0
-            booted = False
-            while _elapsed < _max_boot:
-                time.sleep(_poll_s)
-                _elapsed += _poll_s
-                try:
-                    cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
-                    if cp.returncode == 0:
-                        booted = True
-                        break
-                    reason = (cp.stderr or "").strip()[:120] or f"rc={cp.returncode}"
-                except G.MichaelError as ssh_exc:
-                    reason = str(ssh_exc)[:120]
-                G.console.print(f"[dim]· {_elapsed}s — waiting for SSH ({reason})[/]")
-            if not booted:
-                raise G.MichaelError(f"instance did not respond to SSH within {_max_boot}s")
-        except G.MichaelError as e:
-            if "404" in str(e) or "no_such_instance" in str(e):
-                G.console.print("[yellow]Instance not found — it was probably destroyed. Clearing stale config…[/]")
-                gpu.vast_instance_id = ""
-                gpu.ssh_host = ""
-                cfg.gpu = gpu
-                cfg.save()
-                raise G.MichaelError(
-                    "Stale GPU config cleared. Run `michael gpu up` again and paste the new SSH string."
-                ) from e
-            raise G.MichaelError(f"failed to start instance: {e}") from e
-    else:
-        # ── Verify connectivity (no API, assume already running) ──
-        G.console.print(f"[dim]connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+        except G.MichaelError:
+            pass
+
+    G.console.print(f"[green]GPU config saved[/] ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port})")
+
+
+def _boot_poll(gpu: "GpuConfig", max_boot: int = 300, poll_s: int = 10) -> None:
+    """Poll SSH until the instance responds or timeout. Raises MichaelError on failure."""
+    G.console.print("[dim]start requested — waiting for SSH to come up…[/]")
+    elapsed = 0
+    while elapsed < max_boot:
+        time.sleep(poll_s)
+        elapsed += poll_s
+        try:
+            cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
+            if cp.returncode == 0:
+                return
+            reason = (cp.stderr or "").strip()[:120] or f"rc={cp.returncode}"
+        except G.MichaelError as ssh_exc:
+            reason = str(ssh_exc)[:120]
+        G.console.print(f"[dim]· {elapsed}s — waiting for SSH ({reason})[/]")
+    raise G.MichaelError(f"instance did not respond to SSH within {max_boot}s")
+
+
+def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Start a known Vast.ai instance (by vast_instance_id) and wait for SSH."""
+    if not cfg.vast_api_key:
+        G.console.print(
+            f"[dim]no vast_api_key — assuming instance is already running, "
+            f"connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]"
+        )
         cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
         if cp.returncode != 0:
             raise G.MichaelError(
                 f"GPU unreachable: {cp.stderr.strip()[:200]}\n"
                 "Check ssh_key_path in config or try ssh manually."
             )
+        return
 
+    G.console.print(f"[dim]checking instance {gpu.vast_instance_id} via Vast.ai API…[/]")
+    try:
+        vast = VastClient(cfg.vast_api_key)
+        info = vast.get(gpu.vast_instance_id)
+        vast.close()
+    except G.MichaelError as e:
+        if "404" in str(e) or "no_such_instance" in str(e):
+            G.console.print("[yellow]Instance not found — it was probably destroyed. Clearing stale config…[/]")
+            gpu.vast_instance_id = ""
+            gpu.ssh_host = ""
+            cfg.gpu = gpu
+            cfg.save()
+            if not _select_vast_instance(cfg, gpu):
+                _manual_ssh_setup(cfg, gpu)
+            cfg.gpu = gpu
+            cfg.save()
+            return
+        raise G.MichaelError(f"Vast.ai API error: {e}") from e
+
+    status = info.get("actual_status") or info.get("status") or ""
+    if status == "running":
+        G.console.print(f"[dim]instance already running — reconnecting…[/]")
+        cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
+        if cp.returncode != 0:
+            raise G.MichaelError(
+                f"GPU unreachable despite running status: {cp.stderr.strip()[:200]}"
+            )
+        return
+
+    G.console.print(f"[dim]instance status: {status!r} — starting via Vast.ai API…[/]")
+    try:
+        vast = VastClient(cfg.vast_api_key)
+        vast.start(gpu.vast_instance_id)
+        vast.close()
+    except G.MichaelError as e:
+        raise G.MichaelError(f"failed to start instance: {e}") from e
+
+    _boot_poll(gpu)
+
+
+def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Reconnect when ssh_host is known but vast_instance_id is not."""
+    G.console.print(f"[dim]connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+    try:
+        cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
+        ok = cp.returncode == 0
+    except G.MichaelError:
+        ok = False
+
+    if ok:
+        if cfg.vast_api_key:
+            try:
+                vast = VastClient(cfg.vast_api_key)
+                for inst in vast.list():
+                    if inst.get("ssh_host") == gpu.ssh_host or inst.get("public_ipaddr") == gpu.ssh_host:
+                        gpu.vast_instance_id = str(inst["id"])
+                        G.console.print(f"[dim]re-detected instance id: {gpu.vast_instance_id}[/]")
+                        break
+                vast.close()
+            except G.MichaelError:
+                pass
+        return
+
+    G.console.print("[yellow]SSH unreachable — clearing stale config and re-selecting instance…[/]")
+    gpu.ssh_host = ""
+    gpu.ssh_port = 22
+    gpu.ssh_user = "root"
+    gpu.vast_instance_id = ""
+    cfg.gpu = gpu
+    cfg.save()
+    if not _select_vast_instance(cfg, gpu):
+        _manual_ssh_setup(cfg, gpu)
+    cfg.gpu = gpu
+    cfg.save()
+
+
+def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Install ollama, start daemon, pull model, save endpoint, print port-forward."""
     # ── Install ollama if missing ──
     cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
@@ -318,14 +460,11 @@ def cmd_gpu_up() -> None:
             timeout=180,
         )
         if cp.returncode != 0:
-            raise G.MichaelError(
-                f"ollama install failed:\n{(cp.stderr or cp.stdout)[:500]}"
-            )
+            raise G.MichaelError(f"ollama install failed:\n{(cp.stderr or cp.stdout)[:500]}")
         G.console.print("[green]ollama installed[/]")
 
     # ── Ensure ollama daemon is running ──
     cp = _gpu_ssh_run(gpu, _start_ollama_cmd(gpu), timeout=60)
-    # Output is the backgrounded process's PID. If anything else, the launch failed.
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
         raise G.MichaelError(
@@ -334,7 +473,6 @@ def cmd_gpu_up() -> None:
         )
     G.console.print(f"[dim]ollama daemon started: pid={pid}[/]")
 
-    # Give the daemon a moment, then verify the process is still alive.
     time.sleep(2)
     cp = _gpu_ssh_run(
         gpu,
@@ -343,9 +481,7 @@ def cmd_gpu_up() -> None:
         timeout=60,
     )
     if "alive" not in cp.stdout:
-        raise G.MichaelError(
-            f"ollama died shortly after launch (pid={pid}):\n{cp.stdout.strip()}"
-        )
+        raise G.MichaelError(f"ollama died shortly after launch (pid={pid}):\n{cp.stdout.strip()}")
 
     # ── Wait for the endpoint to answer ──
     _max_wait_s = 60
@@ -364,7 +500,6 @@ def cmd_gpu_up() -> None:
             daemon_ready = True
             break
     if not daemon_ready:
-        # Check for disk-full first — it's the most common silent killer.
         disk = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $5}'", timeout=60).stdout.strip()
         if disk.rstrip("%").isdigit() and int(disk.rstrip("%")) >= 95:
             raise G.MichaelError(
@@ -372,7 +507,6 @@ def cmd_gpu_up() -> None:
                 f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
                 f"'rm -rf /root/.ollama/models/ && df -h /'"
             )
-        # Pull everything we can to diagnose: log, process list, port state.
         diag = _gpu_ssh_run(
             gpu,
             "echo '--- /tmp/ollama.log ---'; cat /tmp/ollama.log 2>&1; "
@@ -394,18 +528,17 @@ def cmd_gpu_up() -> None:
         timeout=60,
     )
     if "missing" in cp.stdout:
-        disk = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $4}'", timeout=60).stdout.strip()
-        if disk.isdigit() and int(disk) < 55_000_000:  # <55 GB free
-            avail_gb = int(disk) // 1_000_000
+        disk_kb = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $4}'", timeout=60).stdout.strip()
+        min_gb = _MODEL_MIN_DISK_GB.get(gpu.model_repo, 30)
+        if disk_kb.isdigit() and int(disk_kb) < min_gb * 1_000_000:
+            avail_gb = int(disk_kb) // 1_000_000
             raise G.MichaelError(
                 f"Not enough disk space to pull {gpu.model_repo} "
-                f"(only ~{avail_gb} GB free, need ~55 GB). Free space and retry:\n"
+                f"(only ~{avail_gb} GB free, need ~{min_gb} GB). Free space and retry:\n"
                 f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
                 f"'rm -rf /root/.ollama/models/ && df -h /'"
             )
         G.console.print(f"[cyan]Pulling model {gpu.model_repo} (this can take a while)…[/]")
-        # Background the pull so a flaky SSH session can't abort it; poll a marker
-        # file the same way we used to for pip.
         _gpu_ssh_run(
             gpu,
             "rm -f /tmp/ollama_pull.exit && "
@@ -415,7 +548,7 @@ def cmd_gpu_up() -> None:
             "> /dev/null 2>&1 < /dev/null & ) && echo started",
             timeout=60,
         )
-        _max_pull_s = 3600  # 1 hour cap for the model pull
+        _max_pull_s = 3600
         _poll_s = 15
         _elapsed = 0
         while _elapsed < _max_pull_s:
@@ -431,9 +564,7 @@ def cmd_gpu_up() -> None:
                     tail = _gpu_ssh_run(
                         gpu, "tail -30 /tmp/ollama_pull.log 2>/dev/null", timeout=60
                     ).stdout
-                    raise G.MichaelError(
-                        f"ollama pull failed (rc={rc}):\n{tail.strip()}"
-                    )
+                    raise G.MichaelError(f"ollama pull failed (rc={rc}):\n{tail.strip()}")
                 G.console.print(f"[green]model {gpu.model_repo} pulled[/]")
                 break
             tail = _ANSI.sub("", _gpu_ssh_run(
@@ -474,8 +605,52 @@ def cmd_gpu_up() -> None:
     )
 
 
+def cmd_gpu() -> None:
+    """Smart GPU command: detects state, resumes or initialises, then runs setup protocol."""
+    cfg = Config.load()
+    gpu = cfg.gpu
+
+    # Always ask which model to run
+    gpu.model_repo = _prompt_model_selection(gpu.model_repo)
+    cfg.gpu = gpu
+    cfg.save()
+
+    if gpu.vast_instance_id:
+        _resume_known_instance(cfg, gpu)
+    elif gpu.ssh_host:
+        _reconnect_ssh_only(cfg, gpu)
+    else:
+        if not _select_vast_instance(cfg, gpu):
+            _manual_ssh_setup(cfg, gpu)
+        cfg.gpu = gpu
+        cfg.save()
+
+    _run_gpu_setup_protocol(cfg, gpu)
+
+
+def cmd_gpu_up() -> None:
+    """Legacy `gpu up`: ensure SSH config exists, then run setup protocol."""
+    cfg = Config.load()
+    gpu = cfg.gpu
+    if not gpu.ssh_host:
+        _manual_ssh_setup(cfg, gpu)
+        cfg.gpu = gpu
+        cfg.save()
+    if gpu.vast_instance_id and cfg.vast_api_key:
+        _resume_known_instance(cfg, gpu)
+    else:
+        G.console.print(f"[dim]connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+        cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
+        if cp.returncode != 0:
+            raise G.MichaelError(
+                f"GPU unreachable: {cp.stderr.strip()[:200]}\n"
+                "Check ssh_key_path in config or try ssh manually."
+            )
+    _run_gpu_setup_protocol(cfg, gpu)
+
+
 def cmd_gpu_new() -> None:
-    """Wipe per-instance GPU state and run `gpu up` for a fresh GPU."""
+    """Wipe per-instance GPU state and run smart `gpu` for a fresh GPU."""
     cfg = Config.load()
     if cfg.gpu.ssh_host or cfg.gpu.vast_instance_id:
         G.console.print(
@@ -490,8 +665,8 @@ def cmd_gpu_new() -> None:
         profile.endpoint = None
         profile.served_model_name = ""
     cfg.save()
-    G.console.print("[green]gpu cleared[/] — paste the new SSH command at the prompt")
-    cmd_gpu_up()
+    G.console.print("[green]gpu cleared[/]")
+    cmd_gpu()
 
 
 def cmd_gpu_down() -> None:
@@ -960,6 +1135,13 @@ def config_cmd() -> None:
     cmd_config()
 
 
+@gpu_app.callback(invoke_without_command=True)
+def gpu_callback(ctx: typer.Context) -> None:
+    """Smart GPU management: detect state, resume or initialise, run setup protocol."""
+    if ctx.invoked_subcommand is None:
+        cmd_gpu()
+
+
 @gpu_app.command("up")
 def gpu_up_cmd() -> None:
     """Start the Vast.ai instance, install ollama if missing, pull the model, print port-forward."""
@@ -968,7 +1150,7 @@ def gpu_up_cmd() -> None:
 
 @gpu_app.command("new")
 def gpu_new_cmd() -> None:
-    """Swap to a new GPU: clears the cached SSH/instance state then runs `gpu up`."""
+    """Swap to a new GPU: clears the cached SSH/instance state then runs `gpu`."""
     cmd_gpu_new()
 
 
