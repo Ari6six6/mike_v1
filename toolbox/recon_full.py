@@ -9,6 +9,12 @@ import importlib.util
 import pathlib
 from datetime import datetime, timezone
 
+try:
+    from michael.workbench import project_root as _project_root
+    _HAS_WORKBENCH = True
+except Exception:
+    _HAS_WORKBENCH = False
+
 TOOL_SCHEMA = {
     "type": "function",
     "function": {
@@ -111,11 +117,18 @@ def recon_full(domain: str, authorized_by: str = "", ports: str = "1-1024", **kw
     sections.append(_run("dir_enum", url=url, authorized_by=authorized_by))
 
     sections.append("\n---")
-    sections.append(
-        f"Merge these sections into targets/{domain}.md using the canonical template. "
-        "Update Recon History with a one-line summary. "
-        "Set Open Questions based on gaps, anomalies, and findings above. "
-        "Call source_map for any detected software versions before committing."
-    )
 
-    return "\n".join(sections)
+    content = "\n".join(sections)
+
+    if _HAS_WORKBENCH:
+        try:
+            root = _project_root()
+            targets_dir = root / "targets"
+            targets_dir.mkdir(parents=True, exist_ok=True)
+            out_file = targets_dir / f"{domain}.md"
+            out_file.write_text(content, encoding="utf-8")
+            return f"Written to targets/{domain}.md\n\n" + content
+        except Exception as exc:
+            return f"[write failed: {exc}]\n\n" + content
+
+    return content
