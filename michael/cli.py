@@ -407,10 +407,17 @@ def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
     status = info.get("actual_status") or info.get("status") or ""
     if status == "running":
         G.console.print(f"[dim]instance already running — reconnecting…[/]")
-        cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
-        if cp.returncode != 0:
+        try:
+            cp = _gpu_ssh_run(gpu, "echo ok", timeout=60)
+            ssh_ok = cp.returncode == 0
+        except G.MichaelError:
+            ssh_ok = False
+        if not ssh_ok:
             raise G.MichaelError(
-                f"GPU unreachable despite running status: {cp.stderr.strip()[:200]}"
+                f"SSH connection timed out or was refused ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
+                f"Add your public key to this instance in the Vast.ai console:\n"
+                f"  Account → SSH Keys → paste contents of ~/.ssh/id_ed25519.pub\n\n"
+                f"Then run `michael gpu` again."
             )
         return
 
