@@ -414,11 +414,17 @@ def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
         except G.MichaelError:
             ssh_ok = False
         if not ssh_ok:
-            raise G.MichaelError(
-                f"SSH unreachable ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
-                f"Try manually: ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host}\n"
-                f"If that fails, make sure your key is in Vast.ai → Account → SSH Keys."
+            G.console.print(
+                f"[yellow]SSH failed on saved port {gpu.ssh_port} — port may have changed.[/]\n"
+                f"Paste the current SSH command from the Vast.ai instance page:"
             )
+            ssh_str = typer.prompt("SSH command").strip()
+            user, host, port = parse_vast_ssh_cmd(ssh_str)
+            gpu.ssh_user = user
+            gpu.ssh_host = host
+            gpu.ssh_port = port
+            cfg.gpu = gpu
+            cfg.save()
         return
 
     G.console.print(f"[dim]instance status: {status!r} — starting via Vast.ai API…[/]")
