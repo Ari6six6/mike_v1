@@ -391,6 +391,19 @@ def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
             return
         raise G.MichaelError(f"Vast.ai API error: {e}") from e
 
+    # Empty info = instance no longer exists (API returned 200 with no data)
+    if not info:
+        G.console.print("[yellow]Instance not found — it was probably destroyed. Clearing stale config…[/]")
+        gpu.vast_instance_id = ""
+        gpu.ssh_host = ""
+        cfg.gpu = gpu
+        cfg.save()
+        if not _select_vast_instance(cfg, gpu):
+            _manual_ssh_setup(cfg, gpu)
+        cfg.gpu = gpu
+        cfg.save()
+        return
+
     status = info.get("actual_status") or info.get("status") or ""
     if status == "running":
         G.console.print(f"[dim]instance already running — reconnecting…[/]")
@@ -407,6 +420,17 @@ def _resume_known_instance(cfg: "Config", gpu: "GpuConfig") -> None:
         vast.start(gpu.vast_instance_id)
         vast.close()
     except G.MichaelError as e:
+        if "404" in str(e) or "no_such_instance" in str(e):
+            G.console.print("[yellow]Instance not found — it was probably destroyed. Clearing stale config…[/]")
+            gpu.vast_instance_id = ""
+            gpu.ssh_host = ""
+            cfg.gpu = gpu
+            cfg.save()
+            if not _select_vast_instance(cfg, gpu):
+                _manual_ssh_setup(cfg, gpu)
+            cfg.gpu = gpu
+            cfg.save()
+            return
         raise G.MichaelError(f"failed to start instance: {e}") from e
 
     _boot_poll(gpu)
