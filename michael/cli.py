@@ -474,6 +474,21 @@ def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
 
 def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
     """Install ollama, start daemon, pull model, save endpoint, print port-forward."""
+    # ── Verify SSH before doing anything else ──
+    G.console.print(f"[dim]testing SSH connection to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+    try:
+        cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
+        ssh_ok = cp.returncode == 0
+    except G.MichaelError:
+        ssh_ok = False
+    if not ssh_ok:
+        raise G.MichaelError(
+            f"SSH connection timed out or was refused ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n\n"
+            f"Add your public key to this instance in the Vast.ai console:\n"
+            f"  Account → SSH Keys → paste contents of ~/.ssh/id_ed25519.pub\n\n"
+            f"Then run `michael gpu` again."
+        )
+
     # ── Install ollama if missing ──
     cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
