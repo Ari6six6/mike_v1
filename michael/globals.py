@@ -88,7 +88,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "3. WEATHER: always use exactly `curl -s 'https://wttr.in/CITY?format=3'`. "
     "Never use weather.com, OpenWeatherMap, or any other weather service.\n"
     "4. Prefer keyless public APIs. Never invent or placeholder API keys.\n"
-    "5. Keep code changes small. No unrequested comments or scaffolding."
+    "5. Keep code changes small. No unrequested comments or scaffolding.\n"
+    "6. 'Headers' in a user prompt ALWAYS means H1–H3 (the context package) unless "
+    "a URL or domain is explicitly present in the same message. Never ask what "
+    "headers — read them from the context package above.\n"
+    "7. Never ask for clarification on a sparse prompt. Mine H1–H3 first; if intent "
+    "remains unclear, state your interpretation and proceed. Asking questions exits "
+    "the loop without committing — it wastes the user's run."
 )
 
 
