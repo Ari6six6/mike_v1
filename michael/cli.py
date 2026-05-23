@@ -180,7 +180,11 @@ def cmd_new(name: Optional[str]) -> None:
     default_path = G.WORKBENCH_DIR / "codebases" / slug_preview
     path_str = typer.prompt("path", default=str(default_path))
     path = pathlib.Path(path_str).expanduser().resolve()
+    mission = typer.prompt("mission  (objective — leave blank to skip)", default="").strip()
     proj = create_project(name, path)
+    if mission:
+        (path / "MISSION.md").write_text(mission + "\n")
+        G.console.print(f"[dim]mission saved to MISSION.md[/]")
     set_active_slug(proj.slug)
     append_event("project.activated", {"slug": proj.slug})
     G.console.print(f"[green]created[/] {proj.slug} at {proj.path}")
@@ -1203,6 +1207,22 @@ def use_cmd(slug: str = typer.Argument(...)) -> None:
 def current_cmd() -> None:
     """Print the active project."""
     cmd_current()
+
+
+@app.command(name="mission")
+def mission_cmd(text: Optional[str] = typer.Argument(None, help="New mission text. Omit to view.")) -> None:
+    """View or set the mission objective for the active project."""
+    proj = require_active_project()
+    p = pathlib.Path(proj.path) / "MISSION.md"
+    if text is None:
+        if p.is_file():
+            G.console.print(p.read_text())
+        else:
+            G.console.print("[dim](no mission set — run: michael mission 'your objective')[/]")
+    else:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text.strip() + "\n")
+        G.console.print("[green]mission set[/]")
 
 
 @app.command(name="config")

@@ -297,6 +297,16 @@ def _tool_body_section() -> str:
     return "\n".join(lines)
 
 
+def _load_mission(project: "Project") -> str:
+    p = pathlib.Path(project.path) / "MISSION.md"
+    if not p.is_file():
+        return ""
+    try:
+        return p.read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def load_scripture(scripture_dir: str) -> str:
     """Read all text files from scripture_dir and return concatenated content."""
     p = pathlib.Path(scripture_dir).expanduser()
@@ -366,9 +376,14 @@ def build_header(
 
     tool_body = _tool_body_section()
 
+    mission = _load_mission(project)
     parts = [
         system_prompt,
         "",
+    ]
+    if mission:
+        parts += ["=== Mission ===", mission, ""]
+    parts += [
         "=== H4: Protocol ===",
         protocol,
         "",
