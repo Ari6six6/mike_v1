@@ -307,6 +307,16 @@ def _load_mission(project: "Project") -> str:
         return ""
 
 
+def _load_news(project: "Project") -> str:
+    p = pathlib.Path(project.path) / "NEWS.md"
+    if not p.is_file():
+        return ""
+    try:
+        return p.read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def load_scripture(scripture_dir: str) -> str:
     """Read all text files from scripture_dir and return concatenated content."""
     p = pathlib.Path(scripture_dir).expanduser()
@@ -383,6 +393,9 @@ def build_header(
     ]
     if mission:
         parts += ["=== Mission ===", mission, ""]
+    news = _load_news(project)
+    if news:
+        parts += ["=== Latest Session Notes ===", news, ""]
     parts += [
         "=== H4: Protocol ===",
         protocol,

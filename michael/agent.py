@@ -90,6 +90,18 @@ def _probe_deliverable(project: Project, run_cmd: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _write_news(project: Project, content: str) -> None:
+    """Persist the agent's last response to NEWS.md for next-run continuity."""
+    if not content:
+        return
+    p = pathlib.Path(project.path) / "NEWS.md"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content.strip() + "\n")
+    except OSError:
+        pass
+
+
 def _rescue_staged(project: Project, pending: PendingChanges) -> None:
     """If the loop exits with uncommitted staged changes, prompt the user to save them."""
     if pending.stage_root is None or not pending.change_log:
@@ -186,6 +198,7 @@ def _run_agent_loop(
         G.console.print(f"[dim]loaded {len(dynamic)} dynamic tool(s): {names}[/]")
     all_tools = TOOLS + dynamic
 
+    last_content: str = ""
     try:
         for turn in range(1, G.MAX_AGENT_TURNS + 1):
             G.console.print(f"[dim]· turn {turn}[/]")
@@ -209,6 +222,8 @@ def _run_agent_loop(
                         raise
             choice = resp.choices[0]
             content = choice.content or ""
+            if content:
+                last_content = content
 
             if content:
                 payload: dict[str, Any] = {"chars": len(content), "turn": turn}
@@ -236,6 +251,7 @@ def _run_agent_loop(
                 # LLM responded without calling a tool — natural loop exit.
                 if content:
                     G.console.print(content)
+                _write_news(project, last_content)
                 _rescue_staged(project, pending)
                 append_event("agent.ended", {"model": name, "turns": turn}, project=project)
                 return
@@ -263,6 +279,7 @@ def _run_agent_loop(
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
             if committed:
+                _write_news(project, last_content)
                 from rich.panel import Panel
                 from michael.project import detect_deliverable, register_deliverable
 
