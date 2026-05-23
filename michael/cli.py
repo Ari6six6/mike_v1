@@ -73,8 +73,8 @@ app = typer.Typer(
 gpu_app = typer.Typer(help="GPU instance management (Ollama).", invoke_without_command=True)
 app.add_typer(gpu_app, name="gpu")
 
-SUPPORTED_MODELS = ["qwen2.5:72b", "qwen3:32b"]
-_MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22}
+SUPPORTED_MODELS = ["qwen2.5:72b", "qwen3:32b", "qwen3:30b-a3b"]
+_MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22, "qwen3:30b-a3b": 20}
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
 app.add_typer(tools_app, name="tools")
@@ -233,7 +233,8 @@ def _prompt_model_selection(current: str) -> str:
     """Interactive numbered menu for model selection. Returns the chosen tag."""
     _labels = {
         "qwen2.5:72b": "large instruct, ~45 GB VRAM",
-        "qwen3:32b": "coder, ~20 GB VRAM",
+        "qwen3:32b": "dense, ~20 GB VRAM",
+        "qwen3:30b-a3b": "MoE, ~18 GB VRAM, more KV cache headroom",
     }
     G.console.print("\n[bold]Available models:[/]")
     for i, tag in enumerate(SUPPORTED_MODELS, 1):
