@@ -75,8 +75,11 @@ def port_scan(
             ["nmap", f"-{timing}", "--open", "-sV", "-p", ports, target],
             capture_output=True, text=True, timeout=180, check=False,
         )
-        out = result.stdout or result.stderr
-        return f"{auth_banner}\n\n{out.strip()}"
+        out = (result.stdout or result.stderr).strip()
+        if len(out) > 2000:
+            lines = out.splitlines()
+            out = "\n".join(lines[:60]) + f"\n... [{len(lines) - 60} more lines truncated — write findings to disk]"
+        return f"{auth_banner}\n\n{out}"
     except FileNotFoundError:
         pass  # nmap not installed, fall back
 
