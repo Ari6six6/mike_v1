@@ -90,6 +90,43 @@ def _probe_deliverable(project: Project, run_cmd: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _rescue_staged(project: Project, pending: PendingChanges) -> None:
+    """If the loop exits with uncommitted staged changes, prompt the user to save them."""
+    if pending.stage_root is None or not pending.change_log:
+        pending.discard()
+        return
+    import typer
+    G.console.print(
+        f"[yellow]⚠  {len(pending.change_log)} staged change(s) were never committed:[/]"
+    )
+    for entry in pending.change_log:
+        path = entry.get("args", {}).get("path", "?")
+        G.console.print(f"[dim]  {entry['tool']} → {path}[/]")
+    if typer.confirm("Commit staged changes now?", default=True):
+        from rich.panel import Panel
+        from michael.project import detect_deliverable, register_deliverable
+        commit_pending(project, pending)
+        det = detect_deliverable(project)
+        if det:
+            deliverable, run_cmd = det
+            ok, probe_out = _probe_deliverable(project, run_cmd)
+            if ok:
+                register_deliverable(project, deliverable, run_cmd)
+                installed = G.MICHAEL_BIN_DIR / project.slug
+                G.console.print(Panel(
+                    f"[bold]{deliverable}[/]\n"
+                    f"installed: [cyan]{installed}[/]\n\n"
+                    f"[dim]{probe_out[:300]}[/]",
+                    title="⚡ Committed + Delivered (rescued)",
+                    border_style="green",
+                ))
+                return
+        G.console.print(Panel("Done.", title="⚡ Committed (rescued)", border_style="green"))
+    else:
+        pending.discard()
+        G.console.print("[dim]staged changes discarded[/]")
+
+
 def _run_agent_loop(
     project: Project,
     cfg: Config,
@@ -199,6 +236,7 @@ def _run_agent_loop(
                 # LLM responded without calling a tool — natural loop exit.
                 if content:
                     G.console.print(content)
+                _rescue_staged(project, pending)
                 append_event("agent.ended", {"model": name, "turns": turn}, project=project)
                 return
 
@@ -287,7 +325,7 @@ def _run_agent_loop(
             border_style="yellow",
         )
     )
-    pending.discard()
+    _rescue_staged(project, pending)
     append_event(
         "agent.ended",
         {"model": name, "turns": G.MAX_AGENT_TURNS, "committed": False},
