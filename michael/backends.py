@@ -58,6 +58,15 @@ def _ssh_argv(vps: VpsConfig) -> list[str]:
 def _ssh_preflight(cfg: Config) -> None:
     if not cfg.vps_active():
         return
+    cp = subprocess.run(
+        _ssh_argv(cfg.vps) + ["podman --version"],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    if cp.returncode != 0:
+        raise G.MichaelError(
+            f"podman not available on VPS {cfg.vps.host}. "
+            "Run `bash bootstrap.sh` on the VPS to install it."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +542,12 @@ class LocalPodmanBackend(SandboxBackend):
         project=None,
     ) -> SandboxResult:
         cfg = self._cfg
+        if not shutil.which("podman"):
+            raise G.MichaelError(
+                "podman not found on PATH. "
+                "Install podman locally, or configure a remote VPS sandbox:\n"
+                "  michael config  →  set vps.host to your VPS IP"
+            )
         with tempfile.NamedTemporaryFile(
             suffix=".py", mode="w", delete=False
         ) as f:
@@ -564,6 +579,8 @@ class LocalPodmanBackend(SandboxBackend):
                 )
             except subprocess.TimeoutExpired:
                 raise G.MichaelError(f"sandbox timed out after {timeout_s}s") from None
+            except FileNotFoundError:
+                raise G.MichaelError("podman not found — cannot run sandbox locally.") from None
         finally:
             pathlib.Path(tmp).unlink(missing_ok=True)
 
@@ -610,6 +627,7 @@ class RemotePodmanBackend(SandboxBackend):
         project=None,
     ) -> SandboxResult:
         cfg = self._cfg
+        _ssh_preflight(cfg)
         vps = cfg.vps
         sb = cfg.sandbox
         run_id = uuid.uuid4().hex[:8]
