@@ -844,11 +844,14 @@ def execute_tool(
             mod = _ilu.module_from_spec(spec)  # type: ignore[arg-type]
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
             if not hasattr(mod, "TOOL_SCHEMA"):
-                return f"forge_tool: wrote {target} but TOOL_SCHEMA not found — tool will not auto-load"
+                target.unlink(missing_ok=True)
+                return f"forge_tool: TOOL_SCHEMA not found — file deleted, fix and retry"
             if not callable(getattr(mod, tool_name, None)):
-                return f"forge_tool: wrote {target} but callable {tool_name!r} not found — dispatch will fail"
+                target.unlink(missing_ok=True)
+                return f"forge_tool: callable {tool_name!r} not found — file deleted, fix and retry"
         except Exception as exc:
-            return f"forge_tool: wrote {target} but validation failed: {exc}"
+            target.unlink(missing_ok=True)
+            return f"forge_tool: syntax/import error — file deleted, fix and retry:\n{exc}"
         return f"forge_tool: {tool_name} created at {target} — available immediately in this run"
 
     if name == "fetch_url":
