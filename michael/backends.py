@@ -585,6 +585,44 @@ class LocalPodmanBackend(SandboxBackend):
             pathlib.Path(tmp).unlink(missing_ok=True)
 
 
+class SubprocessBackend(SandboxBackend):
+    """No-isolation fallback: runs code directly with the host python3."""
+
+    def __init__(self, timeout_s: int) -> None:
+        self._timeout_s = timeout_s
+
+    def run(
+        self,
+        code: str,
+        *,
+        network: bool = False,
+        timeout_s: int = 30,
+        project=None,
+    ) -> SandboxResult:
+        effective = timeout_s or self._timeout_s
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write(code)
+            tmp = f.name
+        try:
+            try:
+                result = subprocess.run(
+                    ["python3", tmp],
+                    capture_output=True,
+                    text=True,
+                    timeout=effective,
+                    check=False,
+                )
+                return SandboxResult(
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    returncode=result.returncode,
+                )
+            except subprocess.TimeoutExpired:
+                raise G.MichaelError(f"sandbox timed out after {effective}s") from None
+        finally:
+            pathlib.Path(tmp).unlink(missing_ok=True)
+
+
 class RemotePodmanBackend(SandboxBackend):
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
@@ -666,6 +704,8 @@ class RemotePodmanBackend(SandboxBackend):
 
 
 def make_backend(cfg: Config) -> SandboxBackend:
+    if cfg.sandbox.passthrough:
+        return SubprocessBackend(cfg.sandbox.timeout_s)
     if cfg.vps_active():
         return RemotePodmanBackend(cfg)
     return LocalPodmanBackend(cfg.sandbox)
