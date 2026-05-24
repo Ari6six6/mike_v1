@@ -41,6 +41,7 @@ class SandboxConfig:
     cpus: float = 1.5
     pids: int = 128
     timeout_s: int = 30
+    passthrough: bool = False
 
 
 @dataclass
@@ -196,6 +197,7 @@ CONFIG_HELP: dict[str, str] = {
     "sandbox.cpus": "Sandbox CPU cap.",
     "sandbox.pids": "Sandbox PID cap.",
     "sandbox.timeout_s": "Default sandbox timeout (seconds).",
+    "sandbox.passthrough": "If true, run sandbox code directly via python3 (no container isolation).",
     "system_prompt": "Default system prompt for the agent loop.",
     "system_prompt_file": "If set, read system prompt from this file.",
     "log_responses": "If true, log full LLM responses to events.jsonl.",
