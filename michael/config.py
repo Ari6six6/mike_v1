@@ -53,9 +53,10 @@ class GpuConfig:
     ssh_user: str = "root"
     ssh_key_path: str = "~/.ssh/id_ed25519"
     vast_instance_id: str = ""
+    gpu_name: str = ""  # hardware name from Vast.ai, e.g. "RTX 4090"
     model_repo: str = "qwen2.5:72b"  # Ollama tag OR HuggingFace ID depending on inference_backend
-    gpu_port: int = 11434  # OpenAI-compatible port (ollama default: 11434, vllm default: 8000)
-    inference_backend: str = "vllm"  # "vllm" (default) or "ollama"
+    gpu_port: int = 11434
+    inference_backend: str = "vllm"  # "vllm" or "ollama" — auto-detected on gpu up
 
 
 @dataclass
@@ -66,7 +67,6 @@ class Config:
     vps: VpsConfig = field(default_factory=VpsConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     gpu: GpuConfig = field(default_factory=GpuConfig)
-    gpus: dict[str, GpuConfig] = field(default_factory=dict)  # named extra GPU slots
     system_prompt: str = G.DEFAULT_SYSTEM_PROMPT
     system_prompt_file: str = ""
     log_responses: bool = True
@@ -107,15 +107,9 @@ class Config:
         valid_gpu = set(GpuConfig.__dataclass_fields__)
         gpu = GpuConfig(**{k: v for k, v in gpu_raw.items() if k in valid_gpu})
 
-        gpus_raw = data.pop("gpus", None) or {}
-        gpus: dict[str, GpuConfig] = {}
-        for slot_name, slot_data in gpus_raw.items():
-            if isinstance(slot_data, dict):
-                gpus[slot_name] = GpuConfig(**{k: v for k, v in slot_data.items() if k in valid_gpu})
-
-        valid = set(cls.__dataclass_fields__) - {"models", "vps", "sandbox", "gpu", "gpus"}
+        valid = set(cls.__dataclass_fields__) - {"models", "vps", "sandbox", "gpu"}
         clean = {k: v for k, v in data.items() if k in valid}
-        return cls(models=models, vps=vps, sandbox=sandbox, gpu=gpu, gpus=gpus, **clean)
+        return cls(models=models, vps=vps, sandbox=sandbox, gpu=gpu, **clean)
 
     def save(self) -> None:
         G.STATE_DIR.mkdir(mode=0o700, exist_ok=True)
@@ -142,16 +136,6 @@ class Config:
             if p.is_file():
                 return p.read_text()
         return self.system_prompt
-
-    def gpu_for_model(self, model_name: str) -> "Optional[GpuConfig]":
-        """Return the GpuConfig for the given model profile name.
-
-        Named slots in cfg.gpus take precedence; falls back to cfg.gpu.
-        Returns None if no GPU is configured at all.
-        """
-        if model_name in self.gpus:
-            return self.gpus[model_name]
-        return self.gpu if self.gpu.ssh_host else None
 
     def vps_active(self) -> bool:
         return bool(self.vps and self.vps.host)

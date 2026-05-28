@@ -154,16 +154,15 @@ def _run_agent_loop(
     endpoint = _require_endpoint(profile, name)
     _ssh_preflight(cfg)
 
-    gpu_cfg = cfg.gpu_for_model(name)
-    if gpu_cfg and gpu_cfg.ssh_host:
-        _ensure_tunnel(gpu_cfg)
+    if cfg.gpu.ssh_host:
+        _ensure_tunnel(cfg.gpu)
         if not _ping_endpoint(endpoint):
-            if gpu_cfg.inference_backend == "vllm":
+            if cfg.gpu.inference_backend == "vllm":
                 G.console.print("[yellow]model server unreachable — restarting vLLM...[/]")
-                _restart_vllm_on_gpu(gpu_cfg)
+                _restart_vllm_on_gpu(cfg.gpu)
             else:
                 G.console.print("[yellow]model server unreachable — restarting ollama...[/]")
-                _restart_ollama_on_gpu(gpu_cfg)
+                _restart_ollama_on_gpu(cfg.gpu)
 
     client = llm_client(endpoint, "", profile.enable_thinking)
     backend = make_backend(cfg)
