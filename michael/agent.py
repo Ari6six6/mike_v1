@@ -375,6 +375,7 @@ def _run_agent_loop(
             border_style="yellow",
         )
     )
+    _write_news(project, last_content)
     _rescue_staged(project, pending)
     append_event(
         "agent.ended",
