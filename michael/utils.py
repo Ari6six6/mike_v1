@@ -167,7 +167,10 @@ _MODE_CONTEXT = {
         "INTENTION: Produce the most PRECISE possible model of the target.\n"
         "Precision — not comprehensiveness — is the metric. One well-sourced fact\n"
         "is worth more than ten inferences.\n\n"
-        "YOUR PRIMARY INPUTS: targets/*.md and recon/raw.jsonl from this project.\n"
+        "YOUR PRIMARY INPUTS: targets/*.md and recon/raw.jsonl if they already exist\n"
+        "in this project. For cross-project handoff the user will reference a file by\n"
+        "name (e.g. 'use my-target-recon.md') — read it from the Results path shown in\n"
+        "project metadata using its absolute path. read_file accepts absolute paths.\n"
         "Do not reach out to the network. Do not scan. Your raw material is on disk.\n\n"
         "YOUR OUTPUT FEEDS BUILD MODE. What you write here is the contract that build\n"
         "mode acts on. A false assumption there is worse than an acknowledged gap.\n\n"
@@ -325,40 +328,50 @@ def build_protocol(mode: str = "recon") -> str:
         "A tool is worth writing if you can imagine calling it again on a different",
         "prompt. If it's truly one-off, inline is fine. Use judgment.",
         "",
-        "TARGET MODELING:",
-        "Recon tool output (explore_service, web_dns_recon, web_http_probe, etc.)",
-        "is rich but transient — only a 600-char excerpt survives in H3. Michael",
-        "auto-saves every raw result to recon/raw.jsonl immediately on execution,",
-        "as a safety net. If you see recon/raw.jsonl in H2 and the corresponding",
-        "targets/<domain>.md is missing or stale, your first act MUST be to",
-        "read_file('recon/raw.jsonl'), synthesize it, and write the target model",
-        "before doing anything else. This recovers data from prior sessions where",
-        "the LLM exited without writing.",
-        "For live recon: write structured findings to targets/<domain>.md in the",
-        "project root. Read the existing file first; update incrementally rather",
-        "than overwriting. The filesystem snapshot (H2) ensures this model",
-        "persists and grows across sessions. A target model is the primary",
-        "working artifact for any recon or reverse-engineering task.",
-        "",
-        "SOURCE MAPPING:",
-        "When version numbers are confirmed (server banners, generator tags, JS",
-        "bundles), call source_map(package, version) to fetch the canonical",
-        "directory structure from public registries (GitHub, npm, PyPI). Compare",
-        "expected paths against what the target actually serves: paths that exist",
-        "in source but return 403/404 indicate hardening; paths that exist in source",
-        "AND return 200 are normal; paths that return 200 but are sensitive (install",
-        "scripts, config templates, version files) are findings. Write this to the",
-        "target model under 'Expected vs Observed Filesystem'.",
-        "Before commit_changes() on any recon session: list detected versions and",
-        "confirm source_map was called for each, or explain why not.",
-        "",
-        "APP MODELS:",
-        "If models/<name>-<version>.json exists in the project, load_model(name, version)",
-        "returns it as structured JSON: base_url, auth, endpoints, stack, notes —",
-        "synthesized from prior recon. Saves you the exploration turn when the ground",
-        "truth is already there. Build one by writing the JSON yourself after a recon",
-        "pass; update it incrementally as you learn more about the target.",
-        "",
+        *(
+            [
+                "TARGET MODELING:",
+                "Recon tool output (explore_service, web_dns_recon, web_http_probe, etc.)",
+                "is rich but transient — only a 600-char excerpt survives in H3. Michael",
+                "auto-saves every raw result to recon/raw.jsonl immediately on execution,",
+                "as a safety net. If you see recon/raw.jsonl in H2 and the corresponding",
+                "targets/<domain>.md is missing or stale, your first act MUST be to",
+                "read_file('recon/raw.jsonl'), synthesize it, and write the target model",
+                "before doing anything else. This recovers data from prior sessions where",
+                "the LLM exited without writing.",
+                "For live recon: write structured findings to targets/<domain>.md in the",
+                "project root. Read the existing file first; update incrementally rather",
+                "than overwriting. The filesystem snapshot (H2) ensures this model",
+                "persists and grows across sessions. A target model is the primary",
+                "working artifact for any recon run.",
+                "",
+                "SOURCE MAPPING:",
+                "When version numbers are confirmed (server banners, generator tags, JS",
+                "bundles), call source_map(package, version) to fetch the canonical",
+                "directory structure from public registries (GitHub, npm, PyPI). Compare",
+                "expected paths against what the target actually serves: paths that exist",
+                "in source but return 403/404 indicate hardening; paths that exist in source",
+                "AND return 200 are normal; paths that return 200 but are sensitive (install",
+                "scripts, config templates, version files) are findings. Write this to the",
+                "target model under 'Expected vs Observed Filesystem'.",
+                "Before commit_changes() on any recon session: list detected versions and",
+                "confirm source_map was called for each, or explain why not.",
+                "",
+            ] if mode == "recon" else []
+        ),
+        *(
+            [
+                "APP MODELS:",
+                "load_model(name, version) returns the AppModel JSON for this project:",
+                "base_url, auth, endpoints, stack, notes — synthesized from prior recon.",
+                "Saves you the exploration turn when the ground truth is already there.",
+                "To load a handoff file from another project: use read_file with the",
+                "absolute path shown under Results in the project metadata",
+                "(e.g. read_file('/absolute/path/to/my-target-recon.md')).",
+                "read_file accepts absolute paths — use them for cross-project input.",
+                "",
+            ] if mode in ("model", "build") else []
+        ),
         "Tools (full schemas in the API call):",
         "  write_file(path, content, expected_changes)        stages a file write",
         "  apply_patch(path, unified_diff, expected_changes)  stages a patch",
@@ -373,7 +386,9 @@ def build_protocol(mode: str = "recon") -> str:
         "  run_in_sandbox(python_code)                        isolated podman, requires confirmation",
         "  run_shell(cmd, timeout_s=60)                       project workspace, requires confirmation",
         "",
-        "All paths are relative to the project root. Do not escape with '..'.",
+        "Paths may be project-relative or absolute (including ~/). Absolute paths work",
+        "for read_file when reading cross-project input. For writes, the path must not",
+        "target ~/.michael/ (the Central FS). Do not use '..' to traverse the filesystem.",
     ])
 
 
