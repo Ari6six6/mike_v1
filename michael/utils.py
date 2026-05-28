@@ -164,13 +164,11 @@ _MODE_CONTEXT = {
     ),
     "model": (
         "You are operating in MODEL MODE.\n\n"
-        "INTENTION: Produce the most PRECISE possible model of the target.\n"
-        "Precision — not comprehensiveness — is the metric. One well-sourced fact\n"
-        "is worth more than ten inferences.\n\n"
-        "YOUR PRIMARY INPUTS: targets/*.md and recon/raw.jsonl if they already exist\n"
-        "in this project. For cross-project handoff the user will reference a file by\n"
-        "name (e.g. 'use my-target-recon.md') — read it from the Results path shown in\n"
-        "project metadata using its absolute path. read_file accepts absolute paths.\n"
+        "INTENTION: Produce the most precise possible model of the system described\n"
+        "in your input data. Precision — not comprehensiveness — is the metric.\n"
+        "One well-sourced fact is worth more than ten inferences.\n\n"
+        "YOUR INPUT: One or more data files the user provides. Read them with\n"
+        "read_file using the path the user specifies. Absolute paths work.\n"
         "Do not reach out to the network. Do not scan. Your raw material is on disk.\n\n"
         "YOUR OUTPUT FEEDS BUILD MODE. What you write here is the contract that build\n"
         "mode acts on. A false assumption there is worse than an acknowledged gap.\n\n"
@@ -181,16 +179,15 @@ _MODE_CONTEXT = {
         "  2. If a version is uncertain, say so: 'nginx 1.x — minor unconfirmed'.\n"
         "     Never write a specific value you cannot source.\n"
         "  3. Document what you DON'T know. Gaps are valuable information. Use the\n"
-        "     notes field: 'auth flow not observed in recon data — structure unknown'.\n"
-        "  4. Source every key fact: 'nginx version from Server header in raw.jsonl,\n"
-        "     confirmed by error page in targets/example.com.md'.\n"
-        "  5. The model is complete when all recon output has been consumed and every\n"
+        "     notes field: 'auth flow not observed in input data — structure unknown'.\n"
+        "  4. Source every key fact: cite which file and which section the value\n"
+        "     came from. If you cannot cite it, do not include it.\n"
+        "  5. The model is complete when all input data has been consumed and every\n"
         "     known gap is documented. Stop there.\n\n"
         "PIPELINE HANDOFF:\n"
         "  Before calling commit_changes, write the primary AppModel JSON to\n"
-        "  the Results path shown in project metadata, named <slug>-model.json\n"
-        "  (e.g. my-target-model.json). This is how the build-mode project picks\n"
-        "  up your work. The user will reference it by name."
+        "  the Results path shown in project metadata, named <slug>-model.json.\n"
+        "  The build-mode project will read it from there."
     ),
     "build": (
         "You are operating in BUILD MODE.\n\n"
@@ -363,11 +360,11 @@ def build_protocol(mode: str = "recon") -> str:
             [
                 "APP MODELS:",
                 "load_model(name, version) returns the AppModel JSON for this project:",
-                "base_url, auth, endpoints, stack, notes — synthesized from prior recon.",
+                "base_url, auth, endpoints, stack, notes — the structured contract for build.",
                 "Saves you the exploration turn when the ground truth is already there.",
-                "To load a handoff file from another project: use read_file with the",
+                "To read a handoff file from another project: use read_file with the",
                 "absolute path shown under Results in the project metadata",
-                "(e.g. read_file('/absolute/path/to/my-target-recon.md')).",
+                "(e.g. read_file('/absolute/path/to/results/my-project-model.json')).",
                 "read_file accepts absolute paths — use them for cross-project input.",
                 "",
             ] if mode in ("model", "build") else []
