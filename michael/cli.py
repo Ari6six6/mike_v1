@@ -30,9 +30,11 @@ from michael.backends import (
     _gpu_ssh_run,
     _ping_endpoint,
     _require_endpoint,
+    _restart_vllm_on_gpu,
     _ssh_argv,
     _ssh_preflight,
     _start_ollama_cmd,
+    _start_vllm_cmd,
     gpu_port_forward_cmd,
     llm_client,
     make_backend,
@@ -70,11 +72,30 @@ app = typer.Typer(
     help="michael — air-gapped AI control loop",
 )
 
-gpu_app = typer.Typer(help="GPU instance management (Ollama).", invoke_without_command=True)
+gpu_app = typer.Typer(help="GPU instance management (vLLM or Ollama).", invoke_without_command=True)
 app.add_typer(gpu_app, name="gpu")
 
 SUPPORTED_MODELS = ["qwen2.5:72b", "qwen3:32b", "qwen3:30b-a3b"]
 _MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22, "qwen3:30b-a3b": 20}
+
+VLLM_SUPPORTED_MODELS = [
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "Qwen/Qwen2.5-72B-Instruct",
+    "Qwen/Qwen3-32B",
+    "Qwen/Qwen3-30B-A3B",
+]
+_VLLM_MODEL_LABELS: dict[str, str] = {
+    "deepseek-ai/DeepSeek-V4-Flash": "MoE, V4 Flash — primary target",
+    "Qwen/Qwen2.5-72B-Instruct":     "dense, ~45 GB VRAM",
+    "Qwen/Qwen3-32B":                "dense, ~20 GB VRAM",
+    "Qwen/Qwen3-30B-A3B":            "MoE, ~18 GB VRAM",
+}
+_VLLM_MODEL_MIN_DISK_GB: dict[str, int] = {
+    "deepseek-ai/DeepSeek-V4-Flash": 30,
+    "Qwen/Qwen2.5-72B-Instruct":     55,
+    "Qwen/Qwen3-32B":                22,
+    "Qwen/Qwen3-30B-A3B":            20,
+}
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
 app.add_typer(tools_app, name="tools")
@@ -233,29 +254,34 @@ def cmd_config() -> None:
     G.console.print("[green]config saved[/]")
 
 
-def _prompt_model_selection(current: str) -> str:
-    """Interactive numbered menu for model selection. Returns the chosen tag."""
-    _labels = {
-        "qwen2.5:72b": "large instruct, ~45 GB VRAM",
-        "qwen3:32b": "dense, ~20 GB VRAM",
-        "qwen3:30b-a3b": "MoE, ~18 GB VRAM, more KV cache headroom",
-    }
-    G.console.print("\n[bold]Available models:[/]")
-    for i, tag in enumerate(SUPPORTED_MODELS, 1):
+def _prompt_model_selection(current: str, backend: str = "ollama") -> str:
+    """Interactive numbered menu for model selection. Returns the chosen tag or HF ID."""
+    if backend == "vllm":
+        model_list = VLLM_SUPPORTED_MODELS
+        labels = _VLLM_MODEL_LABELS
+    else:
+        model_list = SUPPORTED_MODELS
+        labels = {
+            "qwen2.5:72b":   "large instruct, ~45 GB VRAM",
+            "qwen3:32b":     "dense, ~20 GB VRAM",
+            "qwen3:30b-a3b": "MoE, ~18 GB VRAM, more KV cache headroom",
+        }
+    G.console.print(f"\n[bold]Available models ({backend}):[/]")
+    for i, tag in enumerate(model_list, 1):
         marker = " [green]← current[/]" if tag == current else ""
-        G.console.print(f"  [cyan]{i}.[/] {tag}  [dim]({_labels.get(tag, '')})[/]{marker}")
+        G.console.print(f"  [cyan]{i}.[/] {tag}  [dim]({labels.get(tag, '')})[/]{marker}")
 
-    default_idx = SUPPORTED_MODELS.index(current) + 1 if current in SUPPORTED_MODELS else 1
-    raw = typer.prompt(f"Model", default=str(default_idx)).strip()
+    default_idx = model_list.index(current) + 1 if current in model_list else 1
+    raw = typer.prompt("Model", default=str(default_idx)).strip()
     try:
         idx = int(raw)
-        if 1 <= idx <= len(SUPPORTED_MODELS):
-            return SUPPORTED_MODELS[idx - 1]
+        if 1 <= idx <= len(model_list):
+            return model_list[idx - 1]
     except ValueError:
-        if raw in SUPPORTED_MODELS:
+        if raw in model_list:
             return raw
-    G.console.print(f"[yellow]invalid choice, keeping {current or SUPPORTED_MODELS[0]}[/]")
-    return current or SUPPORTED_MODELS[0]
+    G.console.print(f"[yellow]invalid choice, keeping {current or model_list[0]}[/]")
+    return current or model_list[0]
 
 
 def _select_vast_instance(cfg: "Config", gpu: "GpuConfig") -> bool:
@@ -302,6 +328,7 @@ def _select_vast_instance(cfg: "Config", gpu: "GpuConfig") -> bool:
 
     inst = instances[choice - 1]
     gpu.vast_instance_id = str(inst["id"])
+    gpu.gpu_name = inst.get("gpu_name") or ""
     G.console.print(f"[green]Instance {gpu.vast_instance_id} selected.[/]")
 
     # Vast.ai API ssh_port is unreliable — always get exact details from the console command
@@ -490,46 +517,8 @@ def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
     cfg.save()
 
 
-def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
+def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     """Install ollama, start daemon, pull model, save endpoint, print port-forward."""
-    # ── Check local SSH key exists before attempting connection ──
-    key_path = pathlib.Path(gpu.ssh_key_path).expanduser()
-    if not key_path.exists():
-        raise G.MichaelError(
-            f"SSH private key not found: {key_path}\n\n"
-            f"Generate one with:  ssh-keygen -t ed25519\n"
-            f"Then add the public key (~/.ssh/id_ed25519.pub) to your Vast.ai account:\n"
-            f"  console.vast.ai → Account → SSH Keys"
-        )
-
-    # ── Wait for SSH — instance may still be booting ──
-    G.console.print(f"[dim]waiting for SSH on {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
-    _ssh_retries = 6
-    _ssh_wait = 15
-    ssh_ok = False
-    last_err = ""
-    for attempt in range(1, _ssh_retries + 1):
-        try:
-            cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
-            if cp.returncode == 0:
-                ssh_ok = True
-                break
-            last_err = (cp.stderr or "").strip()[:200]
-        except G.MichaelError as e:
-            last_err = str(e)[:200]
-        G.console.print(f"[dim]· attempt {attempt}/{_ssh_retries} — {last_err[:80] or 'no response'} (retry in {_ssh_wait}s)[/]")
-        time.sleep(_ssh_wait)
-    if not ssh_ok:
-        raise G.MichaelError(
-            f"SSH unreachable after {_ssh_retries} attempts ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n"
-            f"Last error: {last_err}\n\n"
-            f"Things to check:\n"
-            f"  1. Your SSH public key is saved in Vast.ai → Account → SSH Keys\n"
-            f"     (paste contents of {key_path}.pub)\n"
-            f"  2. Try manually:  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host}\n"
-            f"  3. If that works, run `michael gpu` again."
-        )
-
     # ── Install ollama if missing ──
     cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
@@ -660,21 +649,23 @@ def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
                 "SSH in and tail /tmp/ollama_pull.log for the real status."
             )
 
-    # ── Save endpoint into models.god so `michael run` works via port forward ──
+    # ── Save endpoint ──
     endpoint = f"http://localhost:{gpu.gpu_port}/v1"
-    if "god" not in cfg.models:
+    profile_name = cfg.default_model or "god"
+    if profile_name not in cfg.models:
         from michael.config import ModelProfile
-        cfg.models["god"] = ModelProfile()
-        cfg.default_model = cfg.default_model or "god"
-    cfg.models["god"].endpoint = endpoint
-    cfg.models["god"].served_model_name = gpu.model_repo
+        cfg.models[profile_name] = ModelProfile()
+        cfg.default_model = profile_name
+    cfg.models[profile_name].endpoint = endpoint
+    cfg.models[profile_name].served_model_name = gpu.model_repo
     cfg.save()
     append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint})
 
     pf_cmd = gpu_port_forward_cmd(gpu)
+    gpu_label = f" ({gpu.gpu_name})" if gpu.gpu_name else ""
     G.console.print(
         Panel(
-            f"[bold green]ollama is ready[/] — {gpu.model_repo}\n\n"
+            f"[bold green]ollama is ready[/]{gpu_label} — {gpu.model_repo}\n\n"
             f"[bold]Open a new terminal and run:[/]\n\n"
             f"  {pf_cmd}\n\n"
             f"[dim]Keep that terminal open. Then use:[/]\n"
@@ -685,38 +676,225 @@ def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
     )
 
 
+def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Install vLLM if missing, start server (downloads model on first run), save endpoint."""
+    # ── Detect GPU count ──
+    ngpu_cp = _gpu_ssh_run(
+        gpu,
+        "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l",
+        timeout=30,
+    )
+    ngpu_str = ngpu_cp.stdout.strip()
+    ngpu = int(ngpu_str) if ngpu_str.isdigit() and int(ngpu_str) > 0 else 1
+    G.console.print(f"[dim]detected {ngpu} GPU(s)[/]")
+
+    # ── Install vLLM if missing ──
+    cp = _gpu_ssh_run(
+        gpu,
+        "python -c 'import vllm' 2>/dev/null && echo installed || echo missing",
+        timeout=30,
+    )
+    if "missing" in cp.stdout:
+        G.console.print("[cyan]Installing vLLM on the GPU (pip install, may take ~2 min)…[/]")
+        cp = _gpu_ssh_run(gpu, "pip install vllm --quiet", timeout=600)
+        if cp.returncode != 0:
+            raise G.MichaelError(f"vLLM install failed:\n{(cp.stderr or cp.stdout)[:500]}")
+        G.console.print("[green]vLLM installed[/]")
+
+    # ── Start vLLM server ──
+    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu), timeout=60)
+    pid = cp.stdout.strip().split("\n")[-1]
+    if not pid.isdigit():
+        raise G.MichaelError(
+            f"vLLM failed to launch (no PID returned)\n"
+            f"stdout: {cp.stdout.strip()!r}\nstderr: {cp.stderr.strip()!r}"
+        )
+    G.console.print(f"[dim]vLLM server started: pid={pid}, tensor-parallel-size={ngpu}[/]")
+
+    time.sleep(2)
+    cp = _gpu_ssh_run(
+        gpu,
+        f"kill -0 {pid} 2>/dev/null && echo alive || "
+        "(echo dead; echo '--- /tmp/vllm.log ---'; cat /tmp/vllm.log 2>/dev/null | head -30)",
+        timeout=60,
+    )
+    if "alive" not in cp.stdout:
+        raise G.MichaelError(f"vLLM died shortly after launch (pid={pid}):\n{cp.stdout.strip()}")
+
+    # ── Poll /v1/models until ready ──
+    # First start downloads model weights from HuggingFace before the endpoint becomes healthy.
+    _max_wait_s = 2400  # 40 min ceiling; breaks out early once ready
+    _poll_s = 15
+    _elapsed = 0
+    server_ready = False
+    G.console.print(
+        f"[dim]waiting for vLLM to load {gpu.model_repo} "
+        f"(first run downloads from HuggingFace, ~15–30 min)…[/]"
+    )
+    while _elapsed < _max_wait_s:
+        time.sleep(_poll_s)
+        _elapsed += _poll_s
+        cp = _gpu_ssh_run(
+            gpu,
+            f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
+            f"&& echo ready || echo down",
+            timeout=60,
+        )
+        if "ready" in cp.stdout:
+            server_ready = True
+            break
+        tail_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null", timeout=60)
+        tail_line = _ANSI.sub("", tail_cp.stdout.strip().replace("\r", " "))
+        G.console.print(
+            f"[dim]· {_elapsed}s — {(tail_line[:120] + '…') if len(tail_line) > 120 else (tail_line or 'loading model…')}[/]"
+        )
+        append_event("gpu.poll", {"elapsed_s": _elapsed, "phase": "vllm_warmup"})
+
+    if not server_ready:
+        disk = _gpu_ssh_run(gpu, "df / | awk 'NR==2{print $5}'", timeout=60).stdout.strip()
+        if disk.rstrip("%").isdigit() and int(disk.rstrip("%")) >= 95:
+            raise G.MichaelError(
+                f"GPU disk is full ({disk} used). Free space and retry:\n"
+                f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
+                f"'rm -rf ~/.cache/huggingface/hub/ && df -h /'"
+            )
+        diag = _gpu_ssh_run(
+            gpu,
+            "echo '--- /tmp/vllm.log (last 40 lines) ---'; tail -40 /tmp/vllm.log 2>&1; "
+            "echo '--- vllm processes ---'; ps -ef | grep -i vllm | grep -v grep; "
+            "echo '--- port ---'; ss -tlnp 2>/dev/null | grep "
+            f"{gpu.gpu_port} || netstat -tlnp 2>/dev/null | grep {gpu.gpu_port} "
+            "|| echo '(nothing listening)'",
+            timeout=60,
+        ).stdout
+        raise G.MichaelError(
+            f"vLLM server did not become ready within {_max_wait_s}s\n{diag.strip()}"
+        )
+
+    # ── Save endpoint ──
+    endpoint = f"http://localhost:{gpu.gpu_port}/v1"
+    profile_name = cfg.default_model or "god"
+    if profile_name not in cfg.models:
+        from michael.config import ModelProfile
+        cfg.models[profile_name] = ModelProfile()
+        cfg.default_model = profile_name
+    cfg.models[profile_name].endpoint = endpoint
+    cfg.models[profile_name].served_model_name = gpu.model_repo
+    cfg.save()
+    append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint, "backend": "vllm"})
+
+    pf_cmd = gpu_port_forward_cmd(gpu)
+    gpu_label = f" ({gpu.gpu_name})" if gpu.gpu_name else ""
+    G.console.print(
+        Panel(
+            f"[bold green]vLLM is ready[/]{gpu_label} — {gpu.model_repo}\n\n"
+            f"[bold]Open a new terminal and run:[/]\n\n"
+            f"  {pf_cmd}\n\n"
+            f"[dim]Keep that terminal open. Then use:[/]\n"
+            f"  michael run <your prompt>\n\n"
+            f"[dim]Tail the server log:[/]\n"
+            f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} 'tail -f /tmp/vllm.log'",
+            title="port forward",
+            border_style="green",
+        )
+    )
+
+
+def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
+    """Verify SSH, auto-detect installed backend, then dispatch to setup."""
+    # ── Check local SSH key exists before attempting connection ──
+    key_path = pathlib.Path(gpu.ssh_key_path).expanduser()
+    if not key_path.exists():
+        raise G.MichaelError(
+            f"SSH private key not found: {key_path}\n\n"
+            f"Generate one with:  ssh-keygen -t ed25519\n"
+            f"Then add the public key (~/.ssh/id_ed25519.pub) to your Vast.ai account:\n"
+            f"  console.vast.ai → Account → SSH Keys"
+        )
+
+    # ── Wait for SSH — instance may still be booting ──
+    G.console.print(f"[dim]waiting for SSH on {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
+    _ssh_retries = 6
+    _ssh_wait = 15
+    ssh_ok = False
+    last_err = ""
+    for attempt in range(1, _ssh_retries + 1):
+        try:
+            cp = _gpu_ssh_run(gpu, "echo ok", timeout=30)
+            if cp.returncode == 0:
+                ssh_ok = True
+                break
+            last_err = (cp.stderr or "").strip()[:200]
+        except G.MichaelError as e:
+            last_err = str(e)[:200]
+        G.console.print(f"[dim]· attempt {attempt}/{_ssh_retries} — {last_err[:80] or 'no response'} (retry in {_ssh_wait}s)[/]")
+        time.sleep(_ssh_wait)
+    if not ssh_ok:
+        raise G.MichaelError(
+            f"SSH unreachable after {_ssh_retries} attempts ({gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}).\n"
+            f"Last error: {last_err}\n\n"
+            f"Things to check:\n"
+            f"  1. Your SSH public key is saved in Vast.ai → Account → SSH Keys\n"
+            f"     (paste contents of {key_path}.pub)\n"
+            f"  2. Try manually:  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host}\n"
+            f"  3. If that works, run `michael gpu` again."
+        )
+
+    # ── Auto-detect what's already installed, override config if needed ──
+    cp_ollama = _gpu_ssh_run(gpu, "command -v ollama >/dev/null 2>&1 && echo yes || echo no", timeout=30)
+    cp_vllm = _gpu_ssh_run(gpu, "python -c 'import vllm' 2>/dev/null && echo yes || echo no", timeout=30)
+    has_ollama = "yes" in cp_ollama.stdout
+    has_vllm = "yes" in cp_vllm.stdout
+
+    if has_ollama and not has_vllm and gpu.inference_backend != "ollama":
+        G.console.print("[dim]detected existing Ollama — using ollama backend[/]")
+        gpu.inference_backend = "ollama"
+        cfg.gpu = gpu
+        cfg.save()
+    elif has_vllm and not has_ollama and gpu.inference_backend != "vllm":
+        G.console.print("[dim]detected existing vLLM — using vllm backend[/]")
+        gpu.inference_backend = "vllm"
+        cfg.gpu = gpu
+        cfg.save()
+
+    # ── Dispatch to backend-specific setup ──
+    if gpu.inference_backend == "vllm":
+        _run_vllm_setup(cfg, gpu)
+    else:
+        _run_ollama_setup(cfg, gpu)
+
+
 def cmd_gpu() -> None:
-    """Smart GPU command: detects state, resumes or initialises, then runs setup protocol."""
+    """Select which GPU to use from your Vast.ai instances. Saves the selection; run `gpu up` to start it."""
     cfg = Config.load()
     gpu = cfg.gpu
 
-    # Always ask which model to run
-    gpu.model_repo = _prompt_model_selection(gpu.model_repo)
+    if not _select_vast_instance(cfg, gpu):
+        _manual_ssh_setup(cfg, gpu)
+
     cfg.gpu = gpu
     cfg.save()
 
-    if gpu.vast_instance_id:
-        _resume_known_instance(cfg, gpu)
-    elif gpu.ssh_host:
-        _reconnect_ssh_only(cfg, gpu)
-    else:
-        if not _select_vast_instance(cfg, gpu):
-            _manual_ssh_setup(cfg, gpu)
-        cfg.gpu = gpu
-        cfg.save()
-
-    _run_gpu_setup_protocol(cfg, gpu)
+    label = f" ({gpu.gpu_name})" if gpu.gpu_name else ""
+    G.console.print(
+        f"[green]GPU selected{label}[/] — instance {gpu.vast_instance_id or gpu.ssh_host}\n"
+        f"[dim]Run [bold]michael gpu up[/bold] to start it.[/]"
+    )
 
 
 def cmd_gpu_up() -> None:
-    """Legacy `gpu up`: ensure SSH config exists, then run setup protocol."""
+    """Start the selected GPU: resume instance, auto-detect backend, install if needed, start server."""
     cfg = Config.load()
     gpu = cfg.gpu
-    if not gpu.ssh_host:
-        _manual_ssh_setup(cfg, gpu)
-        cfg.gpu = gpu
-        cfg.save()
-    if gpu.vast_instance_id and cfg.vast_api_key:
+
+    # No GPU selected yet — run selection first
+    if not gpu.ssh_host and not gpu.vast_instance_id:
+        cmd_gpu()
+        cfg = Config.load()
+        gpu = cfg.gpu
+
+    # Resume or connect
+    if gpu.vast_instance_id:
         _resume_known_instance(cfg, gpu)
     else:
         G.console.print(f"[dim]connecting to {gpu.ssh_user}@{gpu.ssh_host}:{gpu.ssh_port}…[/]")
@@ -726,27 +904,35 @@ def cmd_gpu_up() -> None:
                 f"GPU unreachable: {cp.stderr.strip()[:200]}\n"
                 "Check ssh_key_path in config or try ssh manually."
             )
+
+    # Ask which model, then run the full setup protocol
+    gpu.model_repo = _prompt_model_selection(gpu.model_repo, backend=gpu.inference_backend)
+    cfg.gpu = gpu
+    cfg.save()
+
     _run_gpu_setup_protocol(cfg, gpu)
 
 
 def cmd_gpu_new() -> None:
-    """Wipe per-instance GPU state and run smart `gpu` for a fresh GPU."""
+    """Forget the current GPU selection and pick a new one, then run gpu up."""
     cfg = Config.load()
     if cfg.gpu.ssh_host or cfg.gpu.vast_instance_id:
+        label = f" ({cfg.gpu.gpu_name})" if cfg.gpu.gpu_name else ""
         G.console.print(
-            f"[dim]clearing previous GPU: {cfg.gpu.ssh_user}@{cfg.gpu.ssh_host}"
+            f"[dim]clearing GPU{label}: {cfg.gpu.ssh_user}@{cfg.gpu.ssh_host}"
             f":{cfg.gpu.ssh_port} (instance {cfg.gpu.vast_instance_id or '—'})[/]"
         )
     cfg.gpu.ssh_host = ""
     cfg.gpu.ssh_port = 22
     cfg.gpu.ssh_user = "root"
     cfg.gpu.vast_instance_id = ""
+    cfg.gpu.gpu_name = ""
     for profile in cfg.models.values():
         profile.endpoint = None
         profile.served_model_name = ""
     cfg.save()
     G.console.print("[green]gpu cleared[/]")
-    cmd_gpu()
+    cmd_gpu_up()
 
 
 def cmd_gpu_down() -> None:
@@ -755,16 +941,18 @@ def cmd_gpu_down() -> None:
     if not gpu.ssh_host:
         raise G.MichaelError("no GPU configured — run `michael gpu up` first")
 
-    # Stop ollama via SSH (best-effort — instance may already be off)
-    cp = _gpu_ssh_run(
-        gpu,
-        "systemctl stop ollama 2>/dev/null || pkill -x ollama 2>/dev/null || true",
-        timeout=60,
-    )
-    if cp.returncode == 0:
-        G.console.print("[yellow]ollama stopped[/]")
+    # Stop inference server via SSH (best-effort — instance may already be off)
+    if gpu.inference_backend == "vllm":
+        stop_cmd = "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true"
+        server_name = "vLLM"
     else:
-        G.console.print("[dim]SSH unreachable — skipping ollama stop (instance likely already off)[/]")
+        stop_cmd = "systemctl stop ollama 2>/dev/null || pkill -x ollama 2>/dev/null || true"
+        server_name = "ollama"
+    cp = _gpu_ssh_run(gpu, stop_cmd, timeout=60)
+    if cp.returncode == 0:
+        G.console.print(f"[yellow]{server_name} stopped[/]")
+    else:
+        G.console.print(f"[dim]SSH unreachable — skipping {server_name} stop (instance likely already off)[/]")
 
     if gpu.vast_instance_id and cfg.vast_api_key:
         vast = VastClient(cfg.vast_api_key)
@@ -778,8 +966,9 @@ def cmd_gpu_down() -> None:
         G.console.print("[dim]no vast_instance_id or vast_api_key — skipping API stop[/]")
         append_event("gpu.stopped", {"host": gpu.ssh_host})
 
-    if "god" in cfg.models:
-        cfg.models["god"].endpoint = None
+    profile_name = cfg.default_model or "god"
+    if profile_name in cfg.models:
+        cfg.models[profile_name].endpoint = None
     cfg.save()
 
 
@@ -1233,26 +1422,26 @@ def config_cmd() -> None:
 
 @gpu_app.callback(invoke_without_command=True)
 def gpu_callback(ctx: typer.Context) -> None:
-    """Smart GPU management: detect state, resume or initialise, run setup protocol."""
+    """Pick which Vast.ai GPU to use. Shows your instances with hardware names; saves the selection."""
     if ctx.invoked_subcommand is None:
         cmd_gpu()
 
 
 @gpu_app.command("up")
 def gpu_up_cmd() -> None:
-    """Start the Vast.ai instance, install ollama if missing, pull the model, print port-forward."""
+    """Start the selected GPU: resume instance, auto-detect backend, install if needed, start server."""
     cmd_gpu_up()
 
 
 @gpu_app.command("new")
 def gpu_new_cmd() -> None:
-    """Swap to a new GPU: clears the cached SSH/instance state then runs `gpu`."""
+    """Forget the current GPU and pick + start a fresh one."""
     cmd_gpu_new()
 
 
 @gpu_app.command("down")
 def gpu_down_cmd() -> None:
-    """Stop ollama and pause the Vast.ai instance via API."""
+    """Stop the inference server and pause the Vast.ai instance via API."""
     cmd_gpu_down()
 
 
@@ -1514,7 +1703,7 @@ def dispatch_repl(line: str) -> None:
         elif sub == "down":
             cmd_gpu_down()
         else:
-            G.err.print("usage: gpu up | gpu new | gpu down")
+            cmd_gpu()
     elif cmd == "tools":
         sub = rest[0] if rest else "list"
         if sub == "list":

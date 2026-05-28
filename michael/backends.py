@@ -179,6 +179,71 @@ def _start_ollama_cmd(gpu: GpuConfig) -> str:
     )
 
 
+def _start_vllm_cmd(gpu: GpuConfig, ngpu: int = 1) -> str:
+    """Background vLLM api_server detached from the SSH session, print its PID.
+
+    Three statements, semicolon-separated:
+      1. pkill any existing vllm server (ignored if none)
+      2. touch the log so we can prove the redirect ran even if vllm crashes
+      3. nohup the server with full std-stream redirection, echo the PID
+    """
+    return (
+        "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null; "
+        "touch /tmp/vllm.log; "
+        f"nohup python -m vllm.entrypoints.openai.api_server "
+        f"--model {gpu.model_repo} "
+        f"--port {gpu.gpu_port} "
+        f"--host 0.0.0.0 "
+        f"--tensor-parallel-size {ngpu} "
+        f">/tmp/vllm.log 2>&1 </dev/null & "
+        "echo $!"
+    )
+
+
+def _restart_vllm_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 1800) -> None:
+    """Restart the vLLM server on the GPU and poll until ready.
+
+    Default timeout is 30 minutes because the first start downloads the model
+    from HuggingFace before the endpoint becomes healthy.
+    """
+    G.console.print("[yellow]restarting vLLM on GPU...[/]")
+    ngpu_cp = _gpu_ssh_run(
+        gpu,
+        "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l",
+        timeout=30,
+    )
+    ngpu_str = ngpu_cp.stdout.strip()
+    ngpu = int(ngpu_str) if ngpu_str.isdigit() and int(ngpu_str) > 0 else 1
+
+    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu), timeout=60)
+    pid = cp.stdout.strip().split("\n")[-1]
+    if not pid.isdigit():
+        raise G.MichaelError(
+            f"vLLM failed to launch (no PID returned)\n"
+            f"stdout: {cp.stdout.strip()!r}\nstderr: {cp.stderr.strip()!r}"
+        )
+    elapsed = 0
+    while elapsed < poll_timeout_s:
+        time.sleep(15)
+        elapsed += 15
+        cp = _gpu_ssh_run(
+            gpu,
+            f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
+            f"&& echo ready || echo down",
+            timeout=60,
+        )
+        if "ready" in cp.stdout:
+            G.console.print("[green]vLLM is ready[/]")
+            return
+        tail_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null", timeout=30)
+        tail_line = tail_cp.stdout.strip().replace("\r", " ")
+        G.console.print(f"[dim]· {elapsed}s — {tail_line[:120] or 'waiting for vLLM…'}[/]")
+    raise G.MichaelError(
+        f"vLLM did not come up within {poll_timeout_s}s — "
+        "check /tmp/vllm.log on the GPU"
+    )
+
+
 def _restart_ollama_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 300) -> None:
     """Restart the ollama daemon on the GPU and poll until ready."""
     G.console.print("[yellow]restarting ollama on GPU...[/]")
