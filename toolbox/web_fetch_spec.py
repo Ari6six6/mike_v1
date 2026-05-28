@@ -1,5 +1,6 @@
 """Fetch and parse OpenAPI/Swagger/GraphQL schema into a compact LLM-readable summary."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import json
 from typing import Any

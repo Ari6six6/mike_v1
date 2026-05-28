@@ -1,5 +1,6 @@
 """Global tool: whois_lookup — passive WHOIS query for a domain or IP."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

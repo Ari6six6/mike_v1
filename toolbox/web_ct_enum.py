@@ -6,6 +6,7 @@ internal tools, and decommissioned services that never made it into DNS brute-fo
 lists. Far more comprehensive than common-prefix guessing.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import json
 import re

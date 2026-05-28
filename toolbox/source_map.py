@@ -1,5 +1,6 @@
 """Fetch canonical filesystem structure for a package/version from public registries."""
 from __future__ import annotations
+TOOL_TAGS = ["recon", "model"]
 
 import re
 from typing import Optional

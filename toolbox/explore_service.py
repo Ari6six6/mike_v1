@@ -6,6 +6,7 @@ Runs in sequence: TCP port scan → banner grab → DNS → TLS → subdomain di
 Always runs the full pipeline — no depth switch.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import socket
 import ssl

@@ -1,5 +1,6 @@
 """Global tool: subdomains_passive — passive subdomain enumeration from public sources."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

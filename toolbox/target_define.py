@@ -1,5 +1,6 @@
 """Global tool: target_define — structured target definition and recon agenda."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 import json
 

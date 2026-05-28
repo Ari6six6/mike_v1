@@ -43,6 +43,7 @@ from michael.backends import (
 from michael.config import Config, CONFIG_HELP, GpuConfig, make_stub_config
 from michael.project import (
     Project,
+    VALID_MODES,
     append_event,
     create_project,
     detect_deliverable,
@@ -178,12 +179,13 @@ def cmd_show() -> None:
     table = Table(title=f"projects ({len(projects)})", border_style="cyan")
     table.add_column("active", justify="center")
     table.add_column("slug", style="bold")
+    table.add_column("mode")
     table.add_column("name")
     table.add_column("path")
     table.add_column("created")
     for p in projects:
         mark = "*" if p.slug == active else ""
-        table.add_row(mark, p.slug, p.name, p.path, p.created_at)
+        table.add_row(mark, p.slug, p.mode, p.name, p.path, p.created_at)
     G.console.print(table)
 
 
@@ -202,7 +204,11 @@ def cmd_new(name: Optional[str]) -> None:
     path_str = typer.prompt("path", default=str(default_path))
     path = pathlib.Path(path_str).expanduser().resolve()
     mission = typer.prompt("mission  (objective — leave blank to skip)", default="").strip()
-    proj = create_project(name, path)
+    mode_str = typer.prompt("mode     [recon/model/build]", default="recon").strip().lower()
+    if mode_str not in VALID_MODES:
+        G.err.print(f"invalid mode '{mode_str}' — must be one of: {', '.join(VALID_MODES)}")
+        return
+    proj = create_project(name, path, mode=mode_str)
     if mission:
         (path / "MISSION.md").write_text(mission + "\n")
         G.console.print(f"[dim]mission saved to MISSION.md[/]")
@@ -224,7 +230,7 @@ def cmd_current() -> None:
     if not p:
         G.console.print("(no active project)")
         return
-    G.console.print(f"{p.slug} — {p.name} — {p.path}")
+    G.console.print(f"{p.slug} — {p.name} — {p.mode} — {p.path}")
 
 
 def cmd_config() -> None:

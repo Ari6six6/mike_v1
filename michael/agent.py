@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 from typing import Any
 
 import michael.globals as G
@@ -35,22 +36,47 @@ from michael.utils import build_header, load_scripture
 _MAX_TOOL_RESULT_CHARS = 8_000
 
 
-def _load_dynamic_tools(project_path: str) -> list[dict[str, Any]]:
+_TAGS_RE = re.compile(r'TOOL_TAGS\s*=\s*\[([^\]]+)\]')
+
+
+def _file_passes_mode_filter(py_file: pathlib.Path, mode: str) -> bool:
+    """Check TOOL_TAGS via text scan before importing — avoids import side-effects."""
+    try:
+        text = py_file.read_text(errors="replace")
+    except OSError:
+        return False
+    m = _TAGS_RE.search(text)
+    if m is None:
+        return True  # no TOOL_TAGS = available in all modes
+    raw = [t.strip().strip("'\"") for t in m.group(1).split(",")]
+    return mode in raw
+
+
+def _load_dynamic_tools(project_path: str, mode: str = "recon") -> list[dict[str, Any]]:
     """Load tool schemas from the global toolbox and the project-local tools/ dir.
+
+    Bundled and global tools are filtered by TOOL_TAGS (text-scanned before
+    import). Project-local tools/<project>/tools/ are always loaded — they are
+    project-specific by design and not mode-gated.
 
     Global tools (~/.michael/toolbox/) load first; a project-local tool with
     the same name overrides the global one.
     """
     seen: dict[str, dict[str, Any]] = {}  # name → schema, later entries win
-    search_dirs = [
-        pathlib.Path(__file__).parent.parent / "toolbox",  # bundled tools (lowest priority)
-        pathlib.Path(G.GLOBAL_TOOLS_DIR),                  # user global (~/.michael/toolbox/)
-        pathlib.Path(project_path) / "tools",              # project-local (highest priority)
-    ]
-    for tools_dir in search_dirs:
+    bundled = pathlib.Path(__file__).parent.parent / "toolbox"
+    global_box = pathlib.Path(G.GLOBAL_TOOLS_DIR)
+    project_box = pathlib.Path(project_path) / "tools"
+
+    for tools_dir, apply_filter in [
+        (bundled, True),       # bundled: filter by TOOL_TAGS
+        (global_box, True),    # user global: filter by TOOL_TAGS
+        (project_box, False),  # project-local: always load
+    ]:
         if not tools_dir.exists():
             continue
         for py_file in sorted(tools_dir.glob("*.py")):
+            if apply_filter and not _file_passes_mode_filter(py_file, mode):
+                continue
             try:
                 spec = importlib.util.spec_from_file_location(py_file.stem, py_file)
                 mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
@@ -197,7 +223,7 @@ def _run_agent_loop(
         {"role": "user", "content": prompt},
     ]
     pending = PendingChanges()
-    dynamic = _load_dynamic_tools(project.path)
+    dynamic = _load_dynamic_tools(project.path, mode=project.mode)
     if dynamic:
         names = ", ".join(d["function"]["name"] for d in dynamic if "function" in d)
         G.console.print(f"[dim]loaded {len(dynamic)} dynamic tool(s): {names}[/]")

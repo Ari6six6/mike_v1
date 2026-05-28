@@ -137,8 +137,33 @@ def _action_log_lines(project: "Project") -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_protocol() -> str:
+_MODE_CONTEXT = {
+    "recon": (
+        "You are operating in RECON MODE.\n"
+        "Your purpose is discovery and enumeration. Use recon tools to map targets:\n"
+        "services, infrastructure, exposed endpoints, certificates, DNS, secrets.\n"
+        "Write all findings to structured files (targets/<domain>.md, recon/raw.jsonl)\n"
+        "and call commit_changes before exiting. Data not committed is lost."
+    ),
+    "model": (
+        "You are operating in MODEL MODE.\n"
+        "Your purpose is synthesis. Read recon output and prior findings, then build\n"
+        "structured AppModel artifacts: endpoints, auth flows, stack fingerprints,\n"
+        "attack surface maps. Write to models/<name>-<version>.json and\n"
+        "targets/<domain>.md. Call commit_changes before exiting."
+    ),
+    "build": (
+        "You are operating in BUILD MODE.\n"
+        "Your purpose is software construction. Read existing code, write files,\n"
+        "apply patches, run tests in the sandbox, and commit when done.\n"
+        "Core tools are available. Use run_in_sandbox to validate before committing."
+    ),
+}
+
+
+def build_protocol(mode: str = "recon") -> str:
     """Header 4 — the protocol."""
+    mode_context = _MODE_CONTEXT.get(mode, _MODE_CONTEXT["recon"])
     return "\n".join([
         "You are connected to the user's machine through Project Michael.",
         "Michael is event-sourced: every user prompt and every tool call you",
@@ -173,9 +198,8 @@ def build_protocol() -> str:
         "",
         "Default: no URL → context headers. Always.",
         "",
-        "FULL TOOL ACCESS:",
-        "You have all tools from the start. Explore and build freely in whatever",
-        "order makes sense. There are no phases, no mode restrictions.",
+        "OPERATING MODE:",
+        mode_context,
         "",
         "FILESYSTEM ZONES:",
         "Two zones exist on this machine.",
@@ -207,15 +231,20 @@ def build_protocol() -> str:
         "loop exits naturally with nothing committed.",
         "",
         "MANDATORY OUTPUT RULE:",
-        "If any recon or exploration tool returned results this run, write_file",
-        "and commit_changes are a single atomic obligation — not two optional",
-        "steps. Staging without committing burns data: the staging layer is",
-        "discarded on exit. A run that calls write_file but not commit_changes",
-        "is as broken as one that writes nothing at all.",
-        "Concrete rule: if you called any tool other than read_file, list_dir,",
-        "search_memory, search_tools, fetch_url, load_model, or forge_tool,",
-        "you MUST call write_file to persist findings AND commit_changes before",
-        "exiting. No exceptions beyond a pure informational exchange.",
+        "Staging without committing burns data — the staging layer is discarded on",
+        "exit. A run that calls write_file but not commit_changes is broken.",
+        *(
+            [
+                "In recon/model mode: if any tool other than read_file, list_dir,",
+                "search_memory, search_tools, fetch_url, load_model, or forge_tool",
+                "returned results this run, you MUST write_file to persist findings",
+                "AND call commit_changes before exiting. No exceptions beyond a pure",
+                "informational exchange.",
+            ] if mode in ("recon", "model") else [
+                "In build mode: call commit_changes when your work is complete and",
+                "tested. Do not commit partial or untested work.",
+            ]
+        ),
         "",
         "SANDBOX:",
         "Use run_in_sandbox to test code in an isolated podman container before",
@@ -239,11 +268,13 @@ def build_protocol() -> str:
         "",
         "The rule: if you reached for something that didn't exist and had to inline",
         "the logic, that logic belongs in a tool. Write it before calling",
-        "commit_changes(). Export TOOL_SCHEMA (OpenAI function schema dict) and a",
-        "callable with the same name. It auto-loads immediately — no restart needed.",
+        "commit_changes(). Export TOOL_SCHEMA (OpenAI function schema dict),",
+        f"TOOL_TAGS = ['{mode}'] to scope it to this mode, and a callable with the",
+        "same name. It auto-loads immediately — no restart needed.",
         "",
-        "General-purpose tools go in ~/.michael/toolbox/ — available in every",
-        "project. Project-specific tools go in tools/ — local only.",
+        "General-purpose tools go in ~/.michael/toolbox/ — available to any project",
+        "with the same mode. Project-specific tools go in tools/ — local only,",
+        "always loaded regardless of mode.",
         "A tool is worth writing if you can imagine calling it again on a different",
         "prompt. If it's truly one-off, inline is fine. Use judgment.",
         "",
@@ -354,11 +385,12 @@ def load_scripture(scripture_dir: str) -> str:
 
 
 _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_TOOL_TAGS_RE = re.compile(r'TOOL_TAGS\s*=\s*\[([^\]]+)\]')
 
 
-def _toolbox_listing(project_path: str) -> str:
-    """Summarise available dynamic tools across all three toolbox directories."""
-    def _scan(d: pathlib.Path) -> list[str]:
+def _toolbox_listing(project_path: str, mode: str = "recon") -> str:
+    """Summarise available dynamic tools, filtered to the current mode."""
+    def _scan(d: pathlib.Path, apply_filter: bool) -> list[str]:
         if not d.is_dir():
             return []
         names: list[str] = []
@@ -369,6 +401,12 @@ def _toolbox_listing(project_path: str) -> str:
                 continue
             if "TOOL_SCHEMA" not in text:
                 continue
+            if apply_filter:
+                tm = _TOOL_TAGS_RE.search(text)
+                if tm:
+                    raw_tags = [t.strip().strip("'\"") for t in tm.group(1).split(",")]
+                    if mode not in raw_tags:
+                        continue
             m = _TOOL_NAME_RE.search(text)
             names.append(m.group(1) if m else f.stem)
         return names
@@ -377,18 +415,18 @@ def _toolbox_listing(project_path: str) -> str:
     global_box = G.GLOBAL_TOOLS_DIR
     project_box = pathlib.Path(project_path) / "tools"
 
-    lines = ["Toolbox (dynamic tools available to you):"]
-    for label, path in [
-        ("bundled toolbox/", bundled),
-        ("global ~/.michael/toolbox/", global_box),
-        ("project tools/", project_box),
+    lines = [f"Toolbox (dynamic tools available in {mode} mode):"]
+    for label, path, apply_filter in [
+        ("bundled toolbox/", bundled, True),
+        ("global ~/.michael/toolbox/", global_box, True),
+        ("project tools/", project_box, False),
     ]:
-        names = _scan(path)
+        names = _scan(path, apply_filter)
         entry = ", ".join(names) if names else "(empty)"
         lines.append(f"  {label}: {entry}")
     lines.append(
         "  Write a .py file to project tools/ or ~/.michael/toolbox/ "
-        "exporting TOOL_SCHEMA + a callable to add a new tool."
+        "exporting TOOL_SCHEMA + TOOL_TAGS + a callable to add a new tool."
     )
     return "\n".join(lines)
 
@@ -402,8 +440,8 @@ def build_header(
     prompts = _prompt_history_lines(project)
     actions = _action_log_lines(project)
     snap = filesystem_snapshot(pathlib.Path(project.path))
-    protocol = build_protocol()
-    toolbox = _toolbox_listing(project.path)
+    protocol = build_protocol(mode=project.mode)
+    toolbox = _toolbox_listing(project.path, mode=project.mode)
 
     tool_body = _tool_body_section()
 
@@ -438,6 +476,7 @@ def build_header(
         "=== Project ===",
         f"Name: {project.name}",
         f"Slug: {project.slug}",
+        f"Mode: {project.mode}",
         f"Root: {project.path}",
         "",
         "=== H1: User's prompts in this project (verbatim, in order) ===",

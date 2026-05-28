@@ -52,12 +52,16 @@ import michael.globals as G
 # ---------------------------------------------------------------------------
 
 
+VALID_MODES = ("recon", "model", "build")
+
+
 @dataclass
 class Project:
     slug: str
     name: str
     path: str
     created_at: str
+    mode: str = "recon"
 
     @classmethod
     def load(cls, slug: str) -> "Project":
@@ -66,9 +70,10 @@ class Project:
             raise G.MichaelError(f"unknown project: {slug}")
         data = json.loads(cfg.read_text())
         try:
-            return cls(**{k: data[k] for k in cls.__dataclass_fields__})
-        except KeyError as e:
-            raise G.MichaelError(f"project {slug} config missing key: {e}") from e
+            known = set(cls.__dataclass_fields__)
+            return cls(**{k: v for k, v in data.items() if k in known})
+        except TypeError as e:
+            raise G.MichaelError(f"project {slug} config error: {e}") from e
 
     def save(self) -> None:
         d = G.PROJECTS_DIR / self.slug
@@ -103,13 +108,14 @@ def list_projects() -> list[Project]:
             continue
         try:
             data = json.loads(cfg.read_text())
-            out.append(Project(**{k: data[k] for k in Project.__dataclass_fields__}))
+            known = set(Project.__dataclass_fields__)
+            out.append(Project(**{k: v for k, v in data.items() if k in known}))
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
     return out
 
 
-def create_project(name: str, path: pathlib.Path) -> Project:
+def create_project(name: str, path: pathlib.Path, mode: str = "recon") -> Project:
     base = slugify(name)
     slug = base
     n = 2
@@ -124,6 +130,7 @@ def create_project(name: str, path: pathlib.Path) -> Project:
         name=name,
         path=str(path),
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        mode=mode,
     )
     proj.save()
     append_event("project.created", {"slug": slug, "name": name, "path": str(path)})

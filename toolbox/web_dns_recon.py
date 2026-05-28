@@ -1,5 +1,6 @@
 """DNS reconnaissance via Cloudflare DNS-over-HTTPS. No external libraries needed."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import json
 

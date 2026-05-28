@@ -5,6 +5,7 @@ WAF presence/absence, and exposed sensitive paths all contribute to the picture
 of how seriously this target takes security — which affects how to interact with it.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import re
 from urllib.parse import urlparse
