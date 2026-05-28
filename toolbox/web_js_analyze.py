@@ -5,6 +5,7 @@ API routes, internal hostnames, feature flags, and environment variable names â€
 the full map of what the app talks to and how, readable without auth.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon", "model"]
 
 import re
 from html.parser import HTMLParser

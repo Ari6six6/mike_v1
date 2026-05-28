@@ -1,5 +1,6 @@
 """Global tool: dns_enum — passive DNS record enumeration."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

@@ -4,6 +4,7 @@ ACTIVE: requires authorized_by declaration. Blocked without it.
 Auto-executes.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import importlib.util
 import pathlib

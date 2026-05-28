@@ -137,8 +137,80 @@ def _action_log_lines(project: "Project") -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_protocol() -> str:
+_MODE_CONTEXT = {
+    "recon": (
+        "You are operating in RECON MODE.\n\n"
+        "INTENTION: Produce the most comprehensive possible dataset on the target.\n"
+        "Thoroughness is the metric — cover every available angle before stopping.\n"
+        "A finding you skipped is a finding lost forever to this pipeline.\n\n"
+        "TARGET: Defined in your MISSION or the user's prompt. Use target_define to\n"
+        "formalize it. The target is the organizing principle for this entire run.\n\n"
+        "YOUR OUTPUT FEEDS MODEL MODE. That stage can only work with what you give it.\n"
+        "Gaps in your recon = gaps in the model = gaps in what gets built.\n\n"
+        "OUTPUT DESTINATIONS:\n"
+        "  targets/<domain>.md — structured findings (DNS, TLS, HTTP stack,\n"
+        "    subdomains, IP intel, endpoints, secrets, version disclosures)\n"
+        "  recon/raw.jsonl — auto-saved by the system, no action needed\n\n"
+        "RULES:\n"
+        "  - Use every applicable recon tool before stopping\n"
+        "  - If a tool fails, note the failure in targets/<domain>.md —\n"
+        "    absence of data is data\n"
+        "  - Commit before exiting — staged writes not committed are discarded\n\n"
+        "PIPELINE HANDOFF:\n"
+        "  Before calling commit_changes, write a copy of targets/<domain>.md to\n"
+        "  the Results path shown in project metadata, named <slug>-recon.md\n"
+        "  (e.g. my-target-recon.md). This is how the model-mode project picks\n"
+        "  up your work. The user will reference it by name."
+    ),
+    "model": (
+        "You are operating in MODEL MODE.\n\n"
+        "INTENTION: Produce the most PRECISE possible model of the target.\n"
+        "Precision — not comprehensiveness — is the metric. One well-sourced fact\n"
+        "is worth more than ten inferences.\n\n"
+        "YOUR PRIMARY INPUTS: targets/*.md and recon/raw.jsonl from this project.\n"
+        "Do not reach out to the network. Do not scan. Your raw material is on disk.\n\n"
+        "YOUR OUTPUT FEEDS BUILD MODE. What you write here is the contract that build\n"
+        "mode acts on. A false assumption there is worse than an acknowledged gap.\n\n"
+        "OUTPUT: models/<name>-<version>.json via AppModel format.\n\n"
+        "PRECISION RULES — non-negotiable:\n"
+        "  1. If you have no evidence for a field, leave it empty or mark it unknown.\n"
+        "     Never fill gaps with plausible-sounding guesses.\n"
+        "  2. If a version is uncertain, say so: 'nginx 1.x — minor unconfirmed'.\n"
+        "     Never write a specific value you cannot source.\n"
+        "  3. Document what you DON'T know. Gaps are valuable information. Use the\n"
+        "     notes field: 'auth flow not observed in recon data — structure unknown'.\n"
+        "  4. Source every key fact: 'nginx version from Server header in raw.jsonl,\n"
+        "     confirmed by error page in targets/example.com.md'.\n"
+        "  5. The model is complete when all recon output has been consumed and every\n"
+        "     known gap is documented. Stop there.\n\n"
+        "PIPELINE HANDOFF:\n"
+        "  Before calling commit_changes, write the primary AppModel JSON to\n"
+        "  the Results path shown in project metadata, named <slug>-model.json\n"
+        "  (e.g. my-target-model.json). This is how the build-mode project picks\n"
+        "  up your work. The user will reference it by name."
+    ),
+    "build": (
+        "You are operating in BUILD MODE.\n\n"
+        "INTENTION: Build exactly what the user asks. Nothing more.\n\n"
+        "YOUR PRIMARY INPUT: models/*.json — read the relevant AppModel first.\n"
+        "It defines the target environment, stack, auth patterns, and endpoint\n"
+        "signatures. Do not assume what you haven't read.\n\n"
+        "YOUR TOOLS: Core tools only — write_file, apply_patch, read_file,\n"
+        "run_shell, run_in_sandbox, commit_changes, forge_tool.\n"
+        "No recon tools exist in this mode. If you need a reusable capability,\n"
+        "forge it.\n\n"
+        "RULES:\n"
+        "  - Read the relevant AppModel before writing any code\n"
+        "  - Test in run_in_sandbox before committing\n"
+        "  - Commit when done and tested — not before\n"
+        "  - Do not speculate about the target environment beyond what the model says"
+    ),
+}
+
+
+def build_protocol(mode: str = "recon") -> str:
     """Header 4 — the protocol."""
+    mode_context = _MODE_CONTEXT.get(mode, _MODE_CONTEXT["recon"])
     return "\n".join([
         "You are connected to the user's machine through Project Michael.",
         "Michael is event-sourced: every user prompt and every tool call you",
@@ -173,9 +245,8 @@ def build_protocol() -> str:
         "",
         "Default: no URL → context headers. Always.",
         "",
-        "FULL TOOL ACCESS:",
-        "You have all tools from the start. Explore and build freely in whatever",
-        "order makes sense. There are no phases, no mode restrictions.",
+        "OPERATING MODE:",
+        mode_context,
         "",
         "FILESYSTEM ZONES:",
         "Two zones exist on this machine.",
@@ -207,11 +278,20 @@ def build_protocol() -> str:
         "loop exits naturally with nothing committed.",
         "",
         "MANDATORY OUTPUT RULE:",
-        "If any tool returned results this run, you MUST write them to disk",
-        "before exiting. A run that produces data and writes nothing is a",
-        "failed run. Use write_file to save findings, then commit_changes.",
-        "The only exception is a pure read (read_file, list_dir) with no",
-        "new information discovered.",
+        "Staging without committing burns data — the staging layer is discarded on",
+        "exit. A run that calls write_file but not commit_changes is broken.",
+        *(
+            [
+                "In recon/model mode: if any tool other than read_file, list_dir,",
+                "search_memory, search_tools, fetch_url, load_model, or forge_tool",
+                "returned results this run, you MUST write_file to persist findings",
+                "AND call commit_changes before exiting. No exceptions beyond a pure",
+                "informational exchange.",
+            ] if mode in ("recon", "model") else [
+                "In build mode: call commit_changes when your work is complete and",
+                "tested. Do not commit partial or untested work.",
+            ]
+        ),
         "",
         "SANDBOX:",
         "Use run_in_sandbox to test code in an isolated podman container before",
@@ -235,22 +315,30 @@ def build_protocol() -> str:
         "",
         "The rule: if you reached for something that didn't exist and had to inline",
         "the logic, that logic belongs in a tool. Write it before calling",
-        "commit_changes(). Export TOOL_SCHEMA (OpenAI function schema dict) and a",
-        "callable with the same name. It auto-loads immediately — no restart needed.",
+        "commit_changes(). Export TOOL_SCHEMA (OpenAI function schema dict),",
+        f"TOOL_TAGS = ['{mode}'] to scope it to this mode, and a callable with the",
+        "same name. It auto-loads immediately — no restart needed.",
         "",
-        "General-purpose tools go in ~/.michael/toolbox/ — available in every",
-        "project. Project-specific tools go in tools/ — local only.",
+        "General-purpose tools go in ~/.michael/toolbox/ — available to any project",
+        "with the same mode. Project-specific tools go in tools/ — local only,",
+        "always loaded regardless of mode.",
         "A tool is worth writing if you can imagine calling it again on a different",
         "prompt. If it's truly one-off, inline is fine. Use judgment.",
         "",
         "TARGET MODELING:",
         "Recon tool output (explore_service, web_dns_recon, web_http_probe, etc.)",
-        "is rich but transient — only a brief excerpt survives in H3. Write",
-        "structured findings to targets/<domain>.md in the project root. Read",
-        "the existing file first if it exists; update it incrementally rather than",
-        "overwriting. The filesystem snapshot (H2) ensures this model persists and",
-        "grows across sessions. A target model is the primary working artifact for",
-        "any recon or reverse-engineering task — not the H3 log.",
+        "is rich but transient — only a 600-char excerpt survives in H3. Michael",
+        "auto-saves every raw result to recon/raw.jsonl immediately on execution,",
+        "as a safety net. If you see recon/raw.jsonl in H2 and the corresponding",
+        "targets/<domain>.md is missing or stale, your first act MUST be to",
+        "read_file('recon/raw.jsonl'), synthesize it, and write the target model",
+        "before doing anything else. This recovers data from prior sessions where",
+        "the LLM exited without writing.",
+        "For live recon: write structured findings to targets/<domain>.md in the",
+        "project root. Read the existing file first; update incrementally rather",
+        "than overwriting. The filesystem snapshot (H2) ensures this model",
+        "persists and grows across sessions. A target model is the primary",
+        "working artifact for any recon or reverse-engineering task.",
         "",
         "SOURCE MAPPING:",
         "When version numbers are confirmed (server banners, generator tags, JS",
@@ -328,27 +416,36 @@ def _load_news(project: "Project") -> str:
         return ""
 
 
-def load_scripture(scripture_dir: str) -> str:
-    """Read all text files from scripture_dir and return concatenated content."""
+def load_scripture(scripture_dir: str, mode: str = "") -> str:
+    """Read scripture files, filtered by mode.
+
+    A file whose stem matches a known mode name (recon, model, build) is only
+    loaded when that mode is active. All other files load unconditionally.
+    """
     p = pathlib.Path(scripture_dir).expanduser()
     if not p.is_dir():
         return ""
+    known_modes = {"recon", "model", "build"}
     parts: list[str] = []
     for f in sorted(p.iterdir()):
-        if f.is_file() and _is_text(f):
-            try:
-                parts.append(f"--- {f.name} ---\n{f.read_text(errors='replace')}")
-            except OSError:
-                continue
+        if not (f.is_file() and _is_text(f)):
+            continue
+        if f.stem in known_modes and f.stem != mode:
+            continue  # mode-specific file, wrong mode
+        try:
+            parts.append(f"--- {f.name} ---\n{f.read_text(errors='replace')}")
+        except OSError:
+            continue
     return "\n\n".join(parts)
 
 
 _TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_TOOL_TAGS_RE = re.compile(r'TOOL_TAGS\s*=\s*\[([^\]]+)\]')
 
 
-def _toolbox_listing(project_path: str) -> str:
-    """Summarise available dynamic tools across all three toolbox directories."""
-    def _scan(d: pathlib.Path) -> list[str]:
+def _toolbox_listing(project_path: str, mode: str = "recon") -> str:
+    """Summarise available dynamic tools, filtered to the current mode."""
+    def _scan(d: pathlib.Path, apply_filter: bool) -> list[str]:
         if not d.is_dir():
             return []
         names: list[str] = []
@@ -359,6 +456,12 @@ def _toolbox_listing(project_path: str) -> str:
                 continue
             if "TOOL_SCHEMA" not in text:
                 continue
+            if apply_filter:
+                tm = _TOOL_TAGS_RE.search(text)
+                if tm:
+                    raw_tags = [t.strip().strip("'\"") for t in tm.group(1).split(",")]
+                    if mode not in raw_tags:
+                        continue
             m = _TOOL_NAME_RE.search(text)
             names.append(m.group(1) if m else f.stem)
         return names
@@ -367,18 +470,18 @@ def _toolbox_listing(project_path: str) -> str:
     global_box = G.GLOBAL_TOOLS_DIR
     project_box = pathlib.Path(project_path) / "tools"
 
-    lines = ["Toolbox (dynamic tools available to you):"]
-    for label, path in [
-        ("bundled toolbox/", bundled),
-        ("global ~/.michael/toolbox/", global_box),
-        ("project tools/", project_box),
+    lines = [f"Toolbox (dynamic tools available in {mode} mode):"]
+    for label, path, apply_filter in [
+        ("bundled toolbox/", bundled, True),
+        ("global ~/.michael/toolbox/", global_box, True),
+        ("project tools/", project_box, False),
     ]:
-        names = _scan(path)
+        names = _scan(path, apply_filter)
         entry = ", ".join(names) if names else "(empty)"
         lines.append(f"  {label}: {entry}")
     lines.append(
         "  Write a .py file to project tools/ or ~/.michael/toolbox/ "
-        "exporting TOOL_SCHEMA + a callable to add a new tool."
+        "exporting TOOL_SCHEMA + TOOL_TAGS + a callable to add a new tool."
     )
     return "\n".join(lines)
 
@@ -392,8 +495,8 @@ def build_header(
     prompts = _prompt_history_lines(project)
     actions = _action_log_lines(project)
     snap = filesystem_snapshot(pathlib.Path(project.path))
-    protocol = build_protocol()
-    toolbox = _toolbox_listing(project.path)
+    protocol = build_protocol(mode=project.mode)
+    toolbox = _toolbox_listing(project.path, mode=project.mode)
 
     tool_body = _tool_body_section()
 
@@ -428,7 +531,9 @@ def build_header(
         "=== Project ===",
         f"Name: {project.name}",
         f"Slug: {project.slug}",
+        f"Mode: {project.mode}",
         f"Root: {project.path}",
+        f"Results: {G.RESULTS_DIR}",
         "",
         "=== H1: User's prompts in this project (verbatim, in order) ===",
         "\n".join(prompts) if prompts else "(this is the user's first prompt)",

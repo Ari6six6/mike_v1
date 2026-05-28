@@ -1,5 +1,6 @@
 """Global tool: dir_enum — active HTTP path enumeration (requires authorization declaration)."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

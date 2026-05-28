@@ -1,5 +1,6 @@
 """Global tool: ssl_inspect — TLS certificate and cipher suite analysis."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

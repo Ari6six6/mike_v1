@@ -6,6 +6,7 @@ Knowing the ASN tells you who actually runs the infrastructure — AWS, GCP, Azu
 Cloudflare, Fastly, DigitalOcean, Hetzner, OVH, etc.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import re
 import socket

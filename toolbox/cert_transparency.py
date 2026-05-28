@@ -1,5 +1,6 @@
 """Global tool: cert_transparency — passive subdomain discovery via crt.sh."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

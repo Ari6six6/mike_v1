@@ -1,5 +1,6 @@
 """TLS handshake analysis: version, cipher, ALPN, certificate chain and SANs."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import socket
 import ssl

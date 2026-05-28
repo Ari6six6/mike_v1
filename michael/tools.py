@@ -1302,6 +1302,38 @@ def _dispatch_dynamic_tool_from_path(name: str, args: dict[str, Any], py_file: p
 
 
 # ---------------------------------------------------------------------------
+# Recon persistence
+# ---------------------------------------------------------------------------
+
+
+def _auto_persist_tool_result(
+    name: str,
+    args: dict[str, Any],
+    result: str,
+    project: Project,
+) -> None:
+    """Append raw tool result to <project>/recon/raw.jsonl immediately on execution.
+
+    Writes directly to disk — bypasses PendingChanges intentionally so that
+    data is never lost even when the LLM exits without calling commit_changes.
+    """
+    try:
+        recon_dir = pathlib.Path(project.path) / "recon"
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "tool": name,
+            "args": args,
+            "result": result,
+        }
+        raw_path = recon_dir / "raw.jsonl"
+        with raw_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Master dispatch
 # ---------------------------------------------------------------------------
 
@@ -1355,11 +1387,13 @@ def dispatch_tool_call(
     # Dynamic tool invented by the agent (tools/<name>.py) — auto-executed, no confirmation.
     dynamic_result = _try_dynamic_dispatch(name, args, project)
     if dynamic_result is not None:
+        _auto_persist_tool_result(name, args, dynamic_result, project)
         first = (dynamic_result.splitlines()[0] if dynamic_result else "ok")[:120]
         append_event(
             "tool.executed",
             {"tool": name, "args": args, "summary": f"{summary} → {first}",
-             "result_chars": len(dynamic_result), "dynamic": True},
+             "result_chars": len(dynamic_result), "dynamic": True,
+             "brief_result": dynamic_result[:600]},
             project=project,
         )
         return dynamic_result

@@ -5,6 +5,7 @@ private keys, JWT tokens, internal IP addresses, and generic secrets.
 Checks common endpoints where config files are accidentally deployed publicly.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon", "model"]
 
 import re
 from html.parser import HTMLParser

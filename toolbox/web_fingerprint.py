@@ -4,6 +4,7 @@ Complements web_http_probe (which reads headers). This tool reads the response
 body — where version info survives even when headers are stripped.
 """
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import json
 import re

@@ -1,5 +1,6 @@
 """HTTP endpoint probe: detailed request/response analysis with stack fingerprinting."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 import json
 from typing import Any

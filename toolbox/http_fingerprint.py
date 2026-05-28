@@ -1,5 +1,6 @@
 """Global tool: http_fingerprint — HTTP headers, tech stack, and surface analysis."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 from typing import Any
 
 TOOL_SCHEMA = {

@@ -1,5 +1,6 @@
 """BFS link crawler scoped to a single domain. Discovers pages, forms, and API paths."""
 from __future__ import annotations
+TOOL_TAGS = ["recon"]
 
 from collections import deque
 from html.parser import HTMLParser
