@@ -155,7 +155,12 @@ _MODE_CONTEXT = {
         "  - Use every applicable recon tool before stopping\n"
         "  - If a tool fails, note the failure in targets/<domain>.md —\n"
         "    absence of data is data\n"
-        "  - Commit before exiting — staged writes not committed are discarded"
+        "  - Commit before exiting — staged writes not committed are discarded\n\n"
+        "PIPELINE HANDOFF:\n"
+        "  Before calling commit_changes, write a copy of targets/<domain>.md to\n"
+        "  the Results path shown in project metadata, named <slug>-recon.md\n"
+        "  (e.g. my-target-recon.md). This is how the model-mode project picks\n"
+        "  up your work. The user will reference it by name."
     ),
     "model": (
         "You are operating in MODEL MODE.\n\n"
@@ -177,7 +182,12 @@ _MODE_CONTEXT = {
         "  4. Source every key fact: 'nginx version from Server header in raw.jsonl,\n"
         "     confirmed by error page in targets/example.com.md'.\n"
         "  5. The model is complete when all recon output has been consumed and every\n"
-        "     known gap is documented. Stop there."
+        "     known gap is documented. Stop there.\n\n"
+        "PIPELINE HANDOFF:\n"
+        "  Before calling commit_changes, write the primary AppModel JSON to\n"
+        "  the Results path shown in project metadata, named <slug>-model.json\n"
+        "  (e.g. my-target-model.json). This is how the build-mode project picks\n"
+        "  up your work. The user will reference it by name."
     ),
     "build": (
         "You are operating in BUILD MODE.\n\n"
@@ -515,6 +525,7 @@ def build_header(
         f"Slug: {project.slug}",
         f"Mode: {project.mode}",
         f"Root: {project.path}",
+        f"Results: {G.RESULTS_DIR}",
         "",
         "=== H1: User's prompts in this project (verbatim, in order) ===",
         "\n".join(prompts) if prompts else "(this is the user's first prompt)",

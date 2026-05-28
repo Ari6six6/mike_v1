@@ -27,6 +27,7 @@ MODELS_SUBDIR = "models"   # relative to project.path
 # Workbench — standard topology for built tools
 WORKBENCH_DIR = pathlib.Path.home() / "workbench"
 MICHAEL_BIN_DIR = WORKBENCH_DIR / "bin"
+RESULTS_DIR = WORKBENCH_DIR / "results"
 
 # ---------------------------------------------------------------------------
 # Shared Rich consoles

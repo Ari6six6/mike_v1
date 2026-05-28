@@ -192,6 +192,8 @@ def _run_agent_loop(
 
     client = llm_client(endpoint, "", profile.enable_thinking)
     backend = make_backend(cfg)
+    G.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
     base_prompt = cfg.resolved_system_prompt()
 
     backend_label = (
