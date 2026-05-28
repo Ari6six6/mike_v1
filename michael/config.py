@@ -46,15 +46,16 @@ class SandboxConfig:
 
 @dataclass
 class GpuConfig:
-    """Direct SSH + Ollama config for a rented GPU."""
+    """Direct SSH + GPU inference config for a rented GPU."""
 
     ssh_host: str = ""
     ssh_port: int = 22
     ssh_user: str = "root"
     ssh_key_path: str = "~/.ssh/id_ed25519"
     vast_instance_id: str = ""
-    model_repo: str = "qwen2.5:72b"  # Ollama tag; also supported: "qwen3:32b"
-    gpu_port: int = 11434  # Ollama's default OpenAI-compatible port
+    model_repo: str = "qwen2.5:72b"  # Ollama tag OR HuggingFace ID depending on inference_backend
+    gpu_port: int = 11434  # OpenAI-compatible port (ollama default: 11434, vllm default: 8000)
+    inference_backend: str = "vllm"  # "vllm" (default) or "ollama"
 
 
 @dataclass
@@ -184,10 +185,11 @@ CONFIG_HELP: dict[str, str] = {
     "vast_api_key": "Vast.ai console API key.",
     "default_model": "Profile name to use (default: 'god').",
     "models.god.vast_instance_id": "Numeric ID of the rented GPU instance.",
-    "models.god.served_model_name": "Model tag to send in API requests, e.g. 'qwen2.5:72b'. Auto-filled by `michael gpu up` from gpu.model_repo.",
+    "models.god.served_model_name": "Model name sent in API requests. Auto-filled by `michael gpu up`. For vllm: HF ID (e.g. 'deepseek-ai/DeepSeek-V4-Flash'); for ollama: tag.",
     "models.god.request_timeout_s": "LLM request timeout (seconds).",
-    "gpu.model_repo": "Ollama model tag, e.g. 'qwen2.5:72b' or 'llama3.1:70b'.",
-    "gpu.gpu_port": "Ollama OpenAI-compat port on the GPU (default 11434).",
+    "gpu.inference_backend": "Inference backend: 'vllm' (default) or 'ollama'. vLLM gives better MoE parallelism and agentic throughput.",
+    "gpu.model_repo": "For vllm: HuggingFace ID e.g. 'deepseek-ai/DeepSeek-V4-Flash'. For ollama: tag e.g. 'qwen2.5:72b'.",
+    "gpu.gpu_port": "OpenAI-compat port on the GPU (ollama default: 11434, vllm default: 8000 — configurable).",
     "vps.host": "VPS public IP/hostname (empty = no remote sandbox).",
     "vps.user": "SSH user (default: michael).",
     "vps.ssh_key_path": "Path to private key (default: ~/.ssh/id_ed25519).",
