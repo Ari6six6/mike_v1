@@ -516,7 +516,7 @@ def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
     cfg.save()
 
 
-def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
+def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig", slot: str = "") -> None:
     """Install ollama, start daemon, pull model, save endpoint, print port-forward."""
     # ── Install ollama if missing ──
     cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
@@ -648,32 +648,34 @@ def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
                 "SSH in and tail /tmp/ollama_pull.log for the real status."
             )
 
-    # ── Save endpoint into models.god so `michael run` works via port forward ──
+    # ── Save endpoint into the right model profile ──
+    profile_name = slot or cfg.default_model or "god"
     endpoint = f"http://localhost:{gpu.gpu_port}/v1"
-    if "god" not in cfg.models:
+    if profile_name not in cfg.models:
         from michael.config import ModelProfile
-        cfg.models["god"] = ModelProfile()
-        cfg.default_model = cfg.default_model or "god"
-    cfg.models["god"].endpoint = endpoint
-    cfg.models["god"].served_model_name = gpu.model_repo
+        cfg.models[profile_name] = ModelProfile()
+        if not cfg.default_model:
+            cfg.default_model = profile_name
+    cfg.models[profile_name].endpoint = endpoint
+    cfg.models[profile_name].served_model_name = gpu.model_repo
     cfg.save()
-    append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint})
+    append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint, "slot": profile_name})
 
     pf_cmd = gpu_port_forward_cmd(gpu)
     G.console.print(
         Panel(
-            f"[bold green]ollama is ready[/] — {gpu.model_repo}\n\n"
+            f"[bold green]ollama is ready[/] — {gpu.model_repo}  [dim](profile: {profile_name})[/]\n\n"
             f"[bold]Open a new terminal and run:[/]\n\n"
             f"  {pf_cmd}\n\n"
             f"[dim]Keep that terminal open. Then use:[/]\n"
-            f"  michael run <your prompt>",
+            f"  michael run --model {profile_name} <your prompt>",
             title="port forward",
             border_style="green",
         )
     )
 
 
-def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
+def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig", slot: str = "") -> None:
     """Install vLLM if missing, start server (downloads model on first run), save endpoint."""
     # ── Detect GPU count ──
     ngpu_cp = _gpu_ssh_run(
@@ -768,25 +770,27 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
             f"vLLM server did not become ready within {_max_wait_s}s\n{diag.strip()}"
         )
 
-    # ── Save endpoint into models.god so `michael run` works via port forward ──
+    # ── Save endpoint into the right model profile ──
+    profile_name = slot or cfg.default_model or "god"
     endpoint = f"http://localhost:{gpu.gpu_port}/v1"
-    if "god" not in cfg.models:
+    if profile_name not in cfg.models:
         from michael.config import ModelProfile
-        cfg.models["god"] = ModelProfile()
-        cfg.default_model = cfg.default_model or "god"
-    cfg.models["god"].endpoint = endpoint
-    cfg.models["god"].served_model_name = gpu.model_repo  # HF ID, e.g. "deepseek-ai/DeepSeek-V4-Flash"
+        cfg.models[profile_name] = ModelProfile()
+        if not cfg.default_model:
+            cfg.default_model = profile_name
+    cfg.models[profile_name].endpoint = endpoint
+    cfg.models[profile_name].served_model_name = gpu.model_repo
     cfg.save()
-    append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint, "backend": "vllm"})
+    append_event("gpu.ready", {"host": gpu.ssh_host, "model": gpu.model_repo, "endpoint": endpoint, "backend": "vllm", "slot": profile_name})
 
     pf_cmd = gpu_port_forward_cmd(gpu)
     G.console.print(
         Panel(
-            f"[bold green]vLLM is ready[/] — {gpu.model_repo}\n\n"
+            f"[bold green]vLLM is ready[/] — {gpu.model_repo}  [dim](profile: {profile_name})[/]\n\n"
             f"[bold]Open a new terminal and run:[/]\n\n"
             f"  {pf_cmd}\n\n"
             f"[dim]Keep that terminal open. Then use:[/]\n"
-            f"  michael run <your prompt>\n\n"
+            f"  michael run --model {profile_name} <your prompt>\n\n"
             f"[dim]Tail the server log:[/]\n"
             f"  ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} 'tail -f /tmp/vllm.log'",
             title="port forward",
@@ -795,7 +799,7 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     )
 
 
-def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
+def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig", slot: str = "") -> None:
     """Verify SSH, then dispatch to the configured inference backend setup."""
     # ── Check local SSH key exists before attempting connection ──
     key_path = pathlib.Path(gpu.ssh_key_path).expanduser()
@@ -837,19 +841,40 @@ def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
 
     # ── Dispatch to backend-specific setup ──
     if gpu.inference_backend == "vllm":
-        _run_vllm_setup(cfg, gpu)
+        _run_vllm_setup(cfg, gpu, slot=slot)
     else:
-        _run_ollama_setup(cfg, gpu)
+        _run_ollama_setup(cfg, gpu, slot=slot)
 
 
-def cmd_gpu() -> None:
+def _get_gpu_for_slot(cfg: "Config", slot: str) -> "GpuConfig":
+    """Return the GpuConfig for the given slot, creating a blank one if new."""
+    from michael.config import GpuConfig as _GpuConfig
+    if slot:
+        return cfg.gpus.get(slot, _GpuConfig())
+    return cfg.gpu
+
+
+def _save_gpu_for_slot(cfg: "Config", gpu: "GpuConfig", slot: str) -> None:
+    """Write the GpuConfig back into the right slot in cfg."""
+    if slot:
+        cfg.gpus[slot] = gpu
+    else:
+        cfg.gpu = gpu
+
+
+def cmd_gpu(slot: str = "") -> None:
     """Smart GPU command: detects state, resumes or initialises, then runs setup protocol."""
     cfg = Config.load()
-    gpu = cfg.gpu
+    gpu = _get_gpu_for_slot(cfg, slot)
+
+    # For a brand-new named vLLM slot, default port to 8000 to avoid clashing with Ollama's 11434
+    is_new_slot = bool(slot) and slot not in cfg.gpus
+    if is_new_slot and gpu.inference_backend == "vllm" and gpu.gpu_port == 11434:
+        gpu.gpu_port = 8000
 
     # Always ask which model to run
     gpu.model_repo = _prompt_model_selection(gpu.model_repo, backend=gpu.inference_backend)
-    cfg.gpu = gpu
+    _save_gpu_for_slot(cfg, gpu, slot)
     cfg.save()
 
     if gpu.vast_instance_id:
@@ -859,19 +884,19 @@ def cmd_gpu() -> None:
     else:
         if not _select_vast_instance(cfg, gpu):
             _manual_ssh_setup(cfg, gpu)
-        cfg.gpu = gpu
+        _save_gpu_for_slot(cfg, gpu, slot)
         cfg.save()
 
-    _run_gpu_setup_protocol(cfg, gpu)
+    _run_gpu_setup_protocol(cfg, gpu, slot=slot)
 
 
-def cmd_gpu_up() -> None:
+def cmd_gpu_up(slot: str = "") -> None:
     """Legacy `gpu up`: ensure SSH config exists, then run setup protocol."""
     cfg = Config.load()
-    gpu = cfg.gpu
+    gpu = _get_gpu_for_slot(cfg, slot)
     if not gpu.ssh_host:
         _manual_ssh_setup(cfg, gpu)
-        cfg.gpu = gpu
+        _save_gpu_for_slot(cfg, gpu, slot)
         cfg.save()
     if gpu.vast_instance_id and cfg.vast_api_key:
         _resume_known_instance(cfg, gpu)
@@ -883,34 +908,47 @@ def cmd_gpu_up() -> None:
                 f"GPU unreachable: {cp.stderr.strip()[:200]}\n"
                 "Check ssh_key_path in config or try ssh manually."
             )
-    _run_gpu_setup_protocol(cfg, gpu)
+    _run_gpu_setup_protocol(cfg, gpu, slot=slot)
 
 
-def cmd_gpu_new() -> None:
+def cmd_gpu_new(slot: str = "") -> None:
     """Wipe per-instance GPU state and run smart `gpu` for a fresh GPU."""
     cfg = Config.load()
-    if cfg.gpu.ssh_host or cfg.gpu.vast_instance_id:
-        G.console.print(
-            f"[dim]clearing previous GPU: {cfg.gpu.ssh_user}@{cfg.gpu.ssh_host}"
-            f":{cfg.gpu.ssh_port} (instance {cfg.gpu.vast_instance_id or '—'})[/]"
-        )
-    cfg.gpu.ssh_host = ""
-    cfg.gpu.ssh_port = 22
-    cfg.gpu.ssh_user = "root"
-    cfg.gpu.vast_instance_id = ""
-    for profile in cfg.models.values():
-        profile.endpoint = None
-        profile.served_model_name = ""
+    if slot:
+        gpu = cfg.gpus.get(slot)
+        if gpu:
+            G.console.print(
+                f"[dim]clearing slot '{slot}': {gpu.ssh_user}@{gpu.ssh_host}"
+                f":{gpu.ssh_port} (instance {gpu.vast_instance_id or '—'})[/]"
+            )
+        cfg.gpus.pop(slot, None)
+        if slot in cfg.models:
+            cfg.models[slot].endpoint = None
+            cfg.models[slot].served_model_name = ""
+    else:
+        if cfg.gpu.ssh_host or cfg.gpu.vast_instance_id:
+            G.console.print(
+                f"[dim]clearing default GPU: {cfg.gpu.ssh_user}@{cfg.gpu.ssh_host}"
+                f":{cfg.gpu.ssh_port} (instance {cfg.gpu.vast_instance_id or '—'})[/]"
+            )
+        cfg.gpu.ssh_host = ""
+        cfg.gpu.ssh_port = 22
+        cfg.gpu.ssh_user = "root"
+        cfg.gpu.vast_instance_id = ""
+        for profile in cfg.models.values():
+            profile.endpoint = None
+            profile.served_model_name = ""
     cfg.save()
     G.console.print("[green]gpu cleared[/]")
-    cmd_gpu()
+    cmd_gpu(slot=slot)
 
 
-def cmd_gpu_down() -> None:
+def cmd_gpu_down(slot: str = "") -> None:
     cfg = Config.load()
-    gpu = cfg.gpu
+    gpu = _get_gpu_for_slot(cfg, slot)
     if not gpu.ssh_host:
-        raise G.MichaelError("no GPU configured — run `michael gpu up` first")
+        hint = f"`michael gpu up {slot}`" if slot else "`michael gpu up`"
+        raise G.MichaelError(f"no GPU configured for slot '{slot or 'default'}' — run {hint} first")
 
     # Stop inference server via SSH (best-effort — instance may already be off)
     if gpu.inference_backend == "vllm":
@@ -937,8 +975,9 @@ def cmd_gpu_down() -> None:
         G.console.print("[dim]no vast_instance_id or vast_api_key — skipping API stop[/]")
         append_event("gpu.stopped", {"host": gpu.ssh_host})
 
-    if "god" in cfg.models:
-        cfg.models["god"].endpoint = None
+    profile_name = slot or cfg.default_model or "god"
+    if profile_name in cfg.models:
+        cfg.models[profile_name].endpoint = None
     cfg.save()
 
 
@@ -1391,28 +1430,37 @@ def config_cmd() -> None:
 
 
 @gpu_app.callback(invoke_without_command=True)
-def gpu_callback(ctx: typer.Context) -> None:
+def gpu_callback(
+    ctx: typer.Context,
+    slot: Optional[str] = typer.Argument(default=None, help="Named GPU slot (e.g. 'flash')"),
+) -> None:
     """Smart GPU management: detect state, resume or initialise, run setup protocol."""
     if ctx.invoked_subcommand is None:
-        cmd_gpu()
+        cmd_gpu(slot=slot or "")
 
 
 @gpu_app.command("up")
-def gpu_up_cmd() -> None:
-    """Start the Vast.ai instance, install ollama if missing, pull the model, print port-forward."""
-    cmd_gpu_up()
+def gpu_up_cmd(
+    slot: Optional[str] = typer.Argument(default=None, help="Named GPU slot (e.g. 'flash')"),
+) -> None:
+    """Start the Vast.ai instance, install the inference backend, start server, print port-forward."""
+    cmd_gpu_up(slot=slot or "")
 
 
 @gpu_app.command("new")
-def gpu_new_cmd() -> None:
+def gpu_new_cmd(
+    slot: Optional[str] = typer.Argument(default=None, help="Named GPU slot to wipe and re-initialise"),
+) -> None:
     """Swap to a new GPU: clears the cached SSH/instance state then runs `gpu`."""
-    cmd_gpu_new()
+    cmd_gpu_new(slot=slot or "")
 
 
 @gpu_app.command("down")
-def gpu_down_cmd() -> None:
-    """Stop ollama and pause the Vast.ai instance via API."""
-    cmd_gpu_down()
+def gpu_down_cmd(
+    slot: Optional[str] = typer.Argument(default=None, help="Named GPU slot (e.g. 'flash')"),
+) -> None:
+    """Stop the inference server and pause the Vast.ai instance via API."""
+    cmd_gpu_down(slot=slot or "")
 
 
 @app.command(name="status")
@@ -1666,14 +1714,17 @@ def dispatch_repl(line: str) -> None:
         cmd_run(" ".join(rest))
     elif cmd == "gpu":
         sub = rest[0] if rest else ""
+        slot = rest[1] if len(rest) > 1 else ""
         if sub == "up":
-            cmd_gpu_up()
+            cmd_gpu_up(slot=slot)
         elif sub == "new":
-            cmd_gpu_new()
+            cmd_gpu_new(slot=slot)
         elif sub == "down":
-            cmd_gpu_down()
+            cmd_gpu_down(slot=slot)
+        elif sub and sub not in ("up", "new", "down"):
+            cmd_gpu(slot=sub)  # bare "gpu <slot>" → smart setup
         else:
-            G.err.print("usage: gpu up | gpu new | gpu down")
+            cmd_gpu()
     elif cmd == "tools":
         sub = rest[0] if rest else "list"
         if sub == "list":

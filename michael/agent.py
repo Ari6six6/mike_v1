@@ -14,6 +14,7 @@ from michael.backends import (
     _ping_endpoint,
     _require_endpoint,
     _restart_ollama_on_gpu,
+    _restart_vllm_on_gpu,
     _ssh_preflight,
     llm_client,
     make_backend,
@@ -153,11 +154,16 @@ def _run_agent_loop(
     endpoint = _require_endpoint(profile, name)
     _ssh_preflight(cfg)
 
-    if cfg.gpu.ssh_host:
-        _ensure_tunnel(cfg.gpu)
+    gpu_cfg = cfg.gpu_for_model(name)
+    if gpu_cfg and gpu_cfg.ssh_host:
+        _ensure_tunnel(gpu_cfg)
         if not _ping_endpoint(endpoint):
-            G.console.print("[yellow]model server unreachable — restarting ollama...[/]")
-            _restart_ollama_on_gpu(cfg.gpu)
+            if gpu_cfg.inference_backend == "vllm":
+                G.console.print("[yellow]model server unreachable — restarting vLLM...[/]")
+                _restart_vllm_on_gpu(gpu_cfg)
+            else:
+                G.console.print("[yellow]model server unreachable — restarting ollama...[/]")
+                _restart_ollama_on_gpu(gpu_cfg)
 
     client = llm_client(endpoint, "", profile.enable_thinking)
     backend = make_backend(cfg)
