@@ -218,7 +218,7 @@ def _run_agent_loop(
         project=project,
     )
 
-    scripture = load_scripture(cfg.scripture_dir)
+    scripture = load_scripture(cfg.scripture_dir, mode=project.mode)
     header = build_header(project, base_prompt, scripture)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": header},

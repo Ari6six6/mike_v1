@@ -19,7 +19,7 @@ Parse the domain from the prompt, then follow the steps exactly.
 5. Call `source_map` for any detected software versions
 6. `commit_changes(summary="full recon: <domain>")`
 
-No `michael new` needed for recon — use an existing recon project or create one once.
+Create a recon-mode project with `michael new` (select mode: recon).
 The target model in `targets/<domain>.md` IS the persistent artifact. H2 picks it up every run.
 
 ---

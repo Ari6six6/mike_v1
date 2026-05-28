@@ -416,18 +416,26 @@ def _load_news(project: "Project") -> str:
         return ""
 
 
-def load_scripture(scripture_dir: str) -> str:
-    """Read all text files from scripture_dir and return concatenated content."""
+def load_scripture(scripture_dir: str, mode: str = "") -> str:
+    """Read scripture files, filtered by mode.
+
+    A file whose stem matches a known mode name (recon, model, build) is only
+    loaded when that mode is active. All other files load unconditionally.
+    """
     p = pathlib.Path(scripture_dir).expanduser()
     if not p.is_dir():
         return ""
+    known_modes = {"recon", "model", "build"}
     parts: list[str] = []
     for f in sorted(p.iterdir()):
-        if f.is_file() and _is_text(f):
-            try:
-                parts.append(f"--- {f.name} ---\n{f.read_text(errors='replace')}")
-            except OSError:
-                continue
+        if not (f.is_file() and _is_text(f)):
+            continue
+        if f.stem in known_modes and f.stem != mode:
+            continue  # mode-specific file, wrong mode
+        try:
+            parts.append(f"--- {f.name} ---\n{f.read_text(errors='replace')}")
+        except OSError:
+            continue
     return "\n\n".join(parts)
 
 
