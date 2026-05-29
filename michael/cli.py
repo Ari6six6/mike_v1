@@ -34,7 +34,8 @@ from michael.backends import (
     _ssh_argv,
     _ssh_preflight,
     _GPU_PY,
-    _gpu_vllm_dtype,
+    _gpu_vllm_overrides,
+    _vllm_crash_report,
     _start_ollama_cmd,
     _start_vllm_cmd,
     _stop_vllm_cmd,
@@ -726,16 +727,18 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     # Stop any prior server in its own SSH session first — never chain the kill
     # with the launch (see _stop_vllm_cmd: pkill -f would match the launching
     # shell's own argv and kill it before `echo $!`, the "no PID returned" bug).
-    # Pre-Ampere GPUs (Titan RTX et al., compute cap < 8.0) can't run bfloat16,
-    # which most checkpoints default to; force --dtype half there so the engine
-    # doesn't die at init with "Engine core initialization failed".
-    dtype = _gpu_vllm_dtype(gpu)
-    if dtype:
-        G.console.print(
-            f"[dim]GPU lacks bfloat16 support — launching with --dtype {dtype}[/]"
+    # Pre-Ampere GPUs (Titan RTX et al., compute cap < 8.0) need launch
+    # overrides vLLM won't pick on its own: --dtype half (no bfloat16) and, for
+    # AWQ checkpoints, --quantization awq (the auto-selected awq_marlin kernel
+    # needs sm80+). Without these the engine dies at init.
+    dtype, quant = _gpu_vllm_overrides(gpu)
+    if dtype or quant:
+        extras = " ".join(
+            f"--{k} {v}" for k, v in (("dtype", dtype), ("quantization", quant)) if v
         )
+        G.console.print(f"[dim]pre-Ampere GPU — launching with {extras}[/]")
     _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
-    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype), timeout=60)
+    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype, quant), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
         raise G.MichaelError(
@@ -746,13 +749,12 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
 
     time.sleep(2)
     cp = _gpu_ssh_run(
-        gpu,
-        f"kill -0 {pid} 2>/dev/null && echo alive || "
-        "(echo dead; echo '--- /tmp/vllm.log ---'; cat /tmp/vllm.log 2>/dev/null | head -30)",
-        timeout=60,
+        gpu, f"kill -0 {pid} 2>/dev/null && echo alive || echo dead", timeout=60
     )
     if "alive" not in cp.stdout:
-        raise G.MichaelError(f"vLLM died shortly after launch (pid={pid}):\n{cp.stdout.strip()}")
+        raise G.MichaelError(
+            f"vLLM died shortly after launch (pid={pid}):\n{_vllm_crash_report(gpu)}"
+        )
 
     # ── Poll /v1/models until ready ──
     # First start downloads model weights from HuggingFace before the endpoint becomes healthy.
@@ -781,13 +783,9 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
             gpu, f"kill -0 {pid} 2>/dev/null && echo alive || echo dead", timeout=30
         )
         if "alive" not in live.stdout:
-            log = _gpu_ssh_run(
-                gpu,
-                "echo '--- /tmp/vllm.log (last 40 lines) ---'; tail -40 /tmp/vllm.log 2>&1",
-                timeout=60,
-            ).stdout
             raise G.MichaelError(
-                f"vLLM engine exited during startup (pid={pid}):\n{log.strip()}"
+                f"vLLM engine exited during startup (pid={pid}):\n"
+                f"{_vllm_crash_report(gpu)}"
             )
         tail_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null", timeout=60)
         tail_line = _ANSI.sub("", tail_cp.stdout.strip().replace("\r", " "))
