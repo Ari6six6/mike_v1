@@ -611,6 +611,20 @@ def test_start_vllm_cmd_has_no_pkill():
     )
     assert "--dtype half" in cmd_x
     assert "--quantization awq" in cmd_x
+    # tool calling MUST be enabled — the agent always sends tools=…, and vLLM
+    # 400s on any request containing tools unless the server enables it.
+    assert "--enable-auto-tool-choice" in cmd
+    assert "--tool-call-parser" in cmd
+
+
+def test_vllm_tool_parser_per_model():
+    from michael.backends import _vllm_tool_parser
+    assert _vllm_tool_parser("Qwen/Qwen3-32B-AWQ") == "hermes"
+    assert _vllm_tool_parser("Qwen/Qwen2.5-72B-Instruct-AWQ") == "hermes"
+    assert _vllm_tool_parser("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v3"
+    assert _vllm_tool_parser("meta-llama/Llama-3.1-70B") == "llama3_json"
+    assert _vllm_tool_parser("mistralai/Mistral-7B") == "mistral"
+    assert _vllm_tool_parser("org/unknown-model") == "hermes"
 
 
 def test_prompt_backend_selection(monkeypatch):

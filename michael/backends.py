@@ -255,6 +255,31 @@ def _gpu_vllm_overrides(gpu: GpuConfig) -> tuple[Optional[str], Optional[str]]:
     return "half", quant
 
 
+def _vllm_tool_parser(model_repo: str) -> str:
+    """Pick vLLM's tool-call parser for this model.
+
+    Michael's agent loop sends `tools=…` + `tool_choice="auto"` on every
+    request. vLLM's OpenAI server rejects any request containing `tools` with
+    a 400 unless launched with `--enable-auto-tool-choice` and a matching
+    `--tool-call-parser`. The parser must match the model's chat template:
+
+      - Qwen2.5 / Qwen3        → hermes
+      - DeepSeek V3 / V4        → deepseek_v3
+      - Llama 3.x               → llama3_json
+      - Mistral                 → mistral
+
+    Defaults to hermes, the most broadly compatible parser.
+    """
+    m = model_repo.lower()
+    if "deepseek" in m:
+        return "deepseek_v3"
+    if "llama" in m:
+        return "llama3_json"
+    if "mistral" in m:
+        return "mistral"
+    return "hermes"  # qwen and everything else
+
+
 def _vllm_crash_report(gpu: GpuConfig) -> str:
     """Pull the real root cause out of /tmp/vllm.log after an engine crash.
 
@@ -299,6 +324,7 @@ def _start_vllm_cmd(
     """
     dtype_flag = f"--dtype {dtype} " if dtype else ""
     quant_flag = f"--quantization {quantization} " if quantization else ""
+    tool_parser = _vllm_tool_parser(gpu.model_repo)
     return (
         "touch /tmp/vllm.log; "
         + _GPU_PY +
@@ -307,6 +333,8 @@ def _start_vllm_cmd(
         f"--port {gpu.gpu_port} "
         f"--host 0.0.0.0 "
         f"--tensor-parallel-size {ngpu} "
+        f"--enable-auto-tool-choice "
+        f"--tool-call-parser {tool_parser} "
         f"{dtype_flag}"
         f"{quant_flag}"
         f">/tmp/vllm.log 2>&1 </dev/null & "
