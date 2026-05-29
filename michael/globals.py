@@ -21,6 +21,7 @@ PROJECTS_DIR = STATE_DIR / "projects"
 REPL_HISTORY_PATH = STATE_DIR / "repl_history"
 GLOBAL_TOOLS_DIR = STATE_DIR / "toolbox"
 TOOLS_CATALOG_PATH = STATE_DIR / "tools_catalog.json"
+GPU_KNOWN_HOSTS_PATH = STATE_DIR / "gpu_known_hosts"
 
 MODELS_SUBDIR = "models"   # relative to project.path
 
@@ -53,7 +54,10 @@ SKIP_DIRS = {
 # Tool routing
 # ---------------------------------------------------------------------------
 
-AUTO_EXEC_TOOLS = {"read_file", "list_dir", "search_memory", "fetch_url", "search_tools", "forge_tool", "load_model"}
+# forge_tool is intentionally NOT auto-exec: it writes LLM-supplied code and
+# imports it in this process, so it must pass through the y/n confirmation gate
+# (same surface as run_shell / run_in_sandbox).
+AUTO_EXEC_TOOLS = {"read_file", "list_dir", "search_memory", "fetch_url", "search_tools", "load_model"}
 
 # ---------------------------------------------------------------------------
 # Domain error
@@ -101,3 +105,8 @@ DEFAULT_SYSTEM_PROMPT = (
 
 MAX_AGENT_TURNS = 60
 MAX_VERIFY_RETRIES = 3
+
+# Upper bound on the total characters carried in the rolling message list sent to
+# the model each turn. The pinned system header (H1–H4) and the initial user
+# prompt are always kept; older turn-groups are trimmed to stay under this.
+MAX_CONTEXT_MESSAGE_CHARS = 300_000
