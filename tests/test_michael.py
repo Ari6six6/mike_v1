@@ -585,3 +585,88 @@ def test_appmodel_missing_raises(home, workspace):
     p = m.create_project("am-miss", workspace)
     with pytest.raises(m.MichaelError, match="no model"):
         am.load_model(p, "ghost", "v0")
+
+
+# ---- security: forge_tool requires confirmation -------------------------
+
+import michael.agent as agent
+import michael.tools as tools
+from michael.config import Config
+
+
+def test_forge_tool_is_not_auto_exec():
+    # forge_tool imports LLM-supplied code into this process; it must pass
+    # through the confirmation gate rather than auto-executing.
+    assert "forge_tool" not in michael_globals.AUTO_EXEC_TOOLS
+
+
+def test_forge_tool_rejected_writes_nothing(home, workspace, monkeypatch):
+    p = m.create_project("forge-no", workspace)
+    monkeypatch.setattr(tools, "confirm_tool_call", lambda n, a, pr: ("no", a))
+    pending = tools.PendingChanges()
+    args = {"name": "evil", "code": "import os\nos.system('echo pwned')\n"}
+    result = tools.dispatch_tool_call("forge_tool", args, p, Config(), None, pending)
+    assert result == "[user rejected this tool call]"
+    assert not (pathlib.Path(p.path) / "tools" / "evil.py").exists()
+
+
+def test_forge_tool_accepted_creates_file(home, workspace, monkeypatch):
+    p = m.create_project("forge-yes", workspace)
+    monkeypatch.setattr(tools, "confirm_tool_call", lambda n, a, pr: ("yes", a))
+    pending = tools.PendingChanges()
+    code = (
+        "TOOL_SCHEMA = {'type': 'function', 'function': {'name': 'greet'}}\n"
+        "def greet(**kwargs):\n    return 'hi'\n"
+    )
+    result = tools.dispatch_tool_call(
+        "forge_tool", {"name": "greet", "code": code}, p, Config(), None, pending
+    )
+    assert "created" in result
+    assert (pathlib.Path(p.path) / "tools" / "greet.py").is_file()
+
+
+# ---- agent loop: context windowing --------------------------------------
+
+def _grp(i):
+    return [
+        {"role": "assistant", "content": "a" * 1000,
+         "tool_calls": [{"id": f"c{i}", "type": "function",
+                         "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": f"c{i}", "content": "t" * 1000},
+    ]
+
+
+def _well_formed(msgs):
+    # every 'tool' message must be preceded somewhere earlier by an assistant.
+    seen_assistant = False
+    for mm in msgs:
+        if mm["role"] == "assistant":
+            seen_assistant = True
+        if mm["role"] == "tool" and not seen_assistant:
+            return False
+    return True
+
+
+def test_window_messages_keeps_all_under_budget():
+    msgs = [{"role": "system", "content": "H"}, {"role": "user", "content": "go"}]
+    for i in range(3):
+        msgs += _grp(i)
+    out, dropped = agent._window_messages(msgs, 10_000_000)
+    assert dropped == 0
+    assert out == msgs
+
+
+def test_window_messages_trims_oldest_groups():
+    msgs = [{"role": "system", "content": "H"}, {"role": "user", "content": "go"}]
+    for i in range(10):
+        msgs += _grp(i)
+    out, dropped = agent._window_messages(msgs, 5_000)
+    assert dropped > 0
+    # pinned header + prompt preserved
+    assert out[0]["role"] == "system" and out[1]["role"] == "user"
+    # window after the pinned pair starts on an assistant (group boundary)
+    assert out[2]["role"] == "assistant"
+    # never orphan a tool reply from its assistant call
+    assert _well_formed(out)
+    # newest group is always retained
+    assert out[-1]["tool_call_id"] == "c9"

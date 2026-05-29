@@ -517,6 +517,7 @@ def _reconnect_ssh_only(cfg: "Config", gpu: "GpuConfig") -> None:
     gpu.vast_instance_id = ""
     cfg.gpu = gpu
     cfg.save()
+    _clear_gpu_known_hosts()
     if not _select_vast_instance(cfg, gpu):
         _manual_ssh_setup(cfg, gpu)
     cfg.gpu = gpu
@@ -919,6 +920,19 @@ def cmd_gpu_up() -> None:
     _run_gpu_setup_protocol(cfg, gpu)
 
 
+def _clear_gpu_known_hosts() -> None:
+    """Drop the Michael-managed GPU known_hosts file.
+
+    Called whenever GPU SSH state is reset, so that a freshly rented Vast.ai
+    instance reusing a previous IP does not hard-fail on a host-key mismatch
+    under StrictHostKeyChecking=accept-new.
+    """
+    try:
+        G.GPU_KNOWN_HOSTS_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def cmd_gpu_new() -> None:
     """Forget the current GPU selection and pick a new one, then run gpu up."""
     cfg = Config.load()
@@ -937,6 +951,7 @@ def cmd_gpu_new() -> None:
         profile.endpoint = None
         profile.served_model_name = ""
     cfg.save()
+    _clear_gpu_known_hosts()
     G.console.print("[green]gpu cleared[/]")
     cmd_gpu_up()
 

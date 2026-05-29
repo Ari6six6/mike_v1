@@ -1224,6 +1224,14 @@ def _render_for_confirmation(name: str, args: dict[str, Any], project: Project) 
         return str(args.get("python_code", "")), "python"
     if name == "run_shell":
         return f"cmd: {args.get('cmd', '?')}\ncwd: {project.path}", "bash"
+    if name == "forge_tool":
+        tool_name = str(args.get("name", "?"))
+        code = str(args.get("code", ""))
+        header = (
+            f"# forge_tool: {tool_name} → {project.path}/tools/{tool_name}.py\n"
+            f"# (imported into this process on accept)\n"
+        )
+        return header + code, "python"
     return json.dumps(args, indent=2), "json"
 
 
