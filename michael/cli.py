@@ -84,21 +84,18 @@ _MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22, "qwen3
 
 VLLM_SUPPORTED_MODELS = [
     "deepseek-ai/DeepSeek-V4-Flash",
-    "Qwen/Qwen2.5-72B-Instruct",
-    "Qwen/Qwen3-32B",
-    "Qwen/Qwen3-30B-A3B",
+    "Qwen/Qwen3-32B-AWQ",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ",
 ]
 _VLLM_MODEL_LABELS: dict[str, str] = {
-    "deepseek-ai/DeepSeek-V4-Flash": "MoE, V4 Flash — primary target",
-    "Qwen/Qwen2.5-72B-Instruct":     "dense, ~45 GB VRAM",
-    "Qwen/Qwen3-32B":                "dense, ~20 GB VRAM",
-    "Qwen/Qwen3-30B-A3B":            "MoE, ~18 GB VRAM",
+    "deepseek-ai/DeepSeek-V4-Flash":   "MoE, V4 Flash — 8-bit default, primary target",
+    "Qwen/Qwen3-32B-AWQ":              "dense, 4-bit AWQ, ~20 GB VRAM",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ":   "dense, 4-bit AWQ, ~40 GB VRAM",
 }
 _VLLM_MODEL_MIN_DISK_GB: dict[str, int] = {
-    "deepseek-ai/DeepSeek-V4-Flash": 30,
-    "Qwen/Qwen2.5-72B-Instruct":     55,
-    "Qwen/Qwen3-32B":                22,
-    "Qwen/Qwen3-30B-A3B":            20,
+    "deepseek-ai/DeepSeek-V4-Flash":   30,
+    "Qwen/Qwen3-32B-AWQ":              25,
+    "Qwen/Qwen2.5-72B-Instruct-AWQ":   45,
 }
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
