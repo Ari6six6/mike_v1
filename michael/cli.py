@@ -33,6 +33,7 @@ from michael.backends import (
     _restart_vllm_on_gpu,
     _ssh_argv,
     _ssh_preflight,
+    _GPU_PY,
     _start_ollama_cmd,
     _start_vllm_cmd,
     _stop_vllm_cmd,
@@ -696,15 +697,29 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     ngpu = int(ngpu_str) if ngpu_str.isdigit() and int(ngpu_str) > 0 else 1
     G.console.print(f"[dim]detected {ngpu} GPU(s)[/]")
 
+    # ── Resolve the GPU's Python interpreter ──
+    # Vast images often lack a bare `python`, and the CUDA torch stack lives in
+    # an env that non-interactive SSH does not put on PATH. _GPU_PY picks the
+    # right interpreter; we install into and launch from that same one.
+    py_cp = _gpu_ssh_run(gpu, _GPU_PY + 'echo "$PY"', timeout=30)
+    gpu_py = py_cp.stdout.strip().split("\n")[-1]
+    if not gpu_py:
+        raise G.MichaelError(
+            "no Python interpreter found on the GPU (tried python3, python, "
+            "conda and venv paths).\nUse a template that ships Python — the "
+            "Vast.ai PyTorch template works."
+        )
+    G.console.print(f"[dim]using GPU interpreter: {gpu_py}[/]")
+
     # ── Install vLLM if missing ──
     cp = _gpu_ssh_run(
         gpu,
-        "python -c 'import vllm' 2>/dev/null && echo installed || echo missing",
+        _GPU_PY + '"$PY" -c "import vllm" 2>/dev/null && echo installed || echo missing',
         timeout=30,
     )
     if "missing" in cp.stdout:
         G.console.print("[cyan]Installing vLLM on the GPU (pip install, may take ~2 min)…[/]")
-        cp = _gpu_ssh_run(gpu, "pip install vllm --quiet", timeout=600)
+        cp = _gpu_ssh_run(gpu, _GPU_PY + '"$PY" -m pip install vllm --quiet', timeout=600)
         if cp.returncode != 0:
             raise G.MichaelError(f"vLLM install failed:\n{(cp.stderr or cp.stdout)[:500]}")
         G.console.print("[green]vLLM installed[/]")

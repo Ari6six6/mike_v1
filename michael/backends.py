@@ -180,6 +180,29 @@ def _start_ollama_cmd(gpu: GpuConfig) -> str:
     )
 
 
+# Resolve a Python interpreter on the GPU. Vast.ai images commonly ship only
+# `python3` (no bare `python`), so hardcoding `python` makes the launch die
+# with "nohup: failed to run command 'python'". On top of that, the Vast.ai
+# PyTorch template installs the CUDA torch stack into a specific env (conda or
+# a venv) that a non-interactive SSH shell does not put on PATH — so we prefer
+# the interpreter that can already `import torch` (vLLM needs it, and reusing
+# the prebuilt CUDA torch avoids pip pulling a mismatched build), falling back
+# to the first usable python. Prepend this to any remote command that needs the
+# interpreter and reference it as "$PY"; installing AND launching with the same
+# "$PY" guarantees vLLM is importable where we start it. POSIX-sh compatible.
+_GPU_PY = (
+    'PY=""; '
+    'for _c in python3 python /opt/conda/bin/python /venv/main/bin/python '
+    '/usr/local/bin/python3 /usr/bin/python3; do '
+    '_p="$(command -v "$_c" 2>/dev/null)"; '
+    '[ -z "$_p" ] && [ -x "$_c" ] && _p="$_c"; '
+    '[ -z "$_p" ] && continue; '
+    '[ -z "$PY" ] && PY="$_p"; '
+    'if "$_p" -c "import torch" >/dev/null 2>&1; then PY="$_p"; break; fi; '
+    'done; '
+)
+
+
 def _stop_vllm_cmd() -> str:
     """Kill any running vLLM server.
 
@@ -209,7 +232,8 @@ def _start_vllm_cmd(gpu: GpuConfig, ngpu: int = 1) -> str:
     """
     return (
         "touch /tmp/vllm.log; "
-        f"nohup python -m vllm.entrypoints.openai.api_server "
+        + _GPU_PY +
+        f'nohup "$PY" -m vllm.entrypoints.openai.api_server '
         f"--model {gpu.model_repo} "
         f"--port {gpu.gpu_port} "
         f"--host 0.0.0.0 "

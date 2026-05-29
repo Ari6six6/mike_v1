@@ -599,7 +599,27 @@ def test_start_vllm_cmd_has_no_pkill():
     assert "pkill" not in cmd
     assert cmd.rstrip().endswith("echo $!")
     assert "org/model" in cmd
-    assert "nohup python -m vllm.entrypoints.openai.api_server" in cmd
+    # launches via the resolved interpreter ("$PY"), never a hardcoded `python`
+    # (vast images often have no bare `python` -> nohup: No such file).
+    assert 'nohup "$PY" -m vllm.entrypoints.openai.api_server' in cmd
+    assert "nohup python -m" not in cmd
+
+
+def test_gpu_py_resolver_selects_available_interpreter():
+    """_GPU_PY is valid POSIX sh and resolves "$PY" to a real interpreter."""
+    import os
+    import subprocess
+    from michael.backends import _GPU_PY
+    if shutil.which("bash") is None:
+        pytest.skip("needs bash")
+    cp = subprocess.run(
+        ["bash", "-c", _GPU_PY + 'echo "$PY"'],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert cp.returncode == 0, cp.stderr
+    py = cp.stdout.strip().split("\n")[-1]
+    assert py, f"resolver produced no interpreter (stderr={cp.stderr!r})"
+    assert os.path.exists(py) or shutil.which(py)
 
 
 def test_stop_vllm_cmd_pattern_excludes_own_command_line():
