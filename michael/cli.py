@@ -1098,6 +1098,46 @@ def cmd_gpu_down() -> None:
     cfg.save()
 
 
+def cmd_gpu_logs(lines: int = 120) -> None:
+    """Tail the inference server log on the GPU so server-side crashes are visible.
+
+    The CLI only sees 'Server disconnected' / 'Bad Request' from its side of the
+    tunnel; the real traceback lives in the server log on the GPU. This surfaces
+    it without a manual SSH.
+    """
+    cfg = Config.load()
+    gpu = cfg.gpu
+    if not gpu.ssh_host:
+        raise G.MichaelError("no GPU configured — run `michael gpu up` first")
+
+    # Is the server even alive / listening?
+    health = _gpu_ssh_run(
+        gpu,
+        f"curl -sf http://localhost:{gpu.gpu_port}/v1/models > /dev/null 2>&1 "
+        f"&& echo ready || echo down",
+        timeout=60,
+    )
+    if "ready" in health.stdout:
+        G.console.print(f"[green]server is up[/] on port {gpu.gpu_port}")
+    else:
+        G.console.print(
+            f"[yellow]server not responding[/] on port {gpu.gpu_port} — "
+            "it likely crashed; the log below should say why"
+        )
+
+    if gpu.inference_backend == "vllm":
+        # _vllm_crash_report greps for the root cause then tails the log.
+        G.console.print(_vllm_crash_report(gpu))
+    else:
+        out = _gpu_ssh_run(
+            gpu,
+            "journalctl -u ollama --no-pager -n "
+            f"{lines} 2>/dev/null || tail -{lines} /tmp/ollama*.log 2>&1",
+            timeout=60,
+        ).stdout
+        G.console.print(out.strip() or "(no ollama log found)")
+
+
 def cmd_status() -> None:
     cfg = Config.load()
     state = replay_global()
@@ -1571,6 +1611,12 @@ def gpu_down_cmd() -> None:
     cmd_gpu_down()
 
 
+@gpu_app.command("logs")
+def gpu_logs_cmd() -> None:
+    """Show the inference server log on the GPU (surfaces server-side crashes)."""
+    cmd_gpu_logs()
+
+
 @app.command(name="status")
 def status_cmd() -> None:
     """Show derived state from the event log."""
@@ -1790,6 +1836,7 @@ def dispatch_repl(line: str) -> None:
             "  new [name]                        create new project\n"
             "  up / down                         start/stop GPU (legacy — needs config.json)\n"
             "  gpu up / gpu down                 start instance, install ollama, pull model\n"
+            "  gpu logs                          show the GPU inference server log\n"
             "  tools list                        list all dynamic tools\n"
             "  tools run <name> [key=value ...]  run a dynamic tool directly\n"
             "  tools show <name>                 print tool source\n"
@@ -1828,6 +1875,8 @@ def dispatch_repl(line: str) -> None:
             cmd_gpu_new()
         elif sub == "down":
             cmd_gpu_down()
+        elif sub == "logs":
+            cmd_gpu_logs()
         else:
             cmd_gpu()
     elif cmd == "tools":
