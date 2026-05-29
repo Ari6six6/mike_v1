@@ -34,6 +34,7 @@ from michael.backends import (
     _ssh_argv,
     _ssh_preflight,
     _GPU_PY,
+    _gpu_vllm_dtype,
     _start_ollama_cmd,
     _start_vllm_cmd,
     _stop_vllm_cmd,
@@ -83,21 +84,18 @@ _MODEL_MIN_DISK_GB: dict[str, int] = {"qwen2.5:72b": 55, "qwen3:32b": 22, "qwen3
 
 VLLM_SUPPORTED_MODELS = [
     "deepseek-ai/DeepSeek-V4-Flash",
-    "Qwen/Qwen2.5-72B-Instruct",
-    "Qwen/Qwen3-32B",
-    "Qwen/Qwen3-30B-A3B",
+    "Qwen/Qwen3-32B-AWQ",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ",
 ]
 _VLLM_MODEL_LABELS: dict[str, str] = {
-    "deepseek-ai/DeepSeek-V4-Flash": "MoE, V4 Flash — primary target",
-    "Qwen/Qwen2.5-72B-Instruct":     "dense, ~45 GB VRAM",
-    "Qwen/Qwen3-32B":                "dense, ~20 GB VRAM",
-    "Qwen/Qwen3-30B-A3B":            "MoE, ~18 GB VRAM",
+    "deepseek-ai/DeepSeek-V4-Flash":   "MoE, V4 Flash — 8-bit default, primary target",
+    "Qwen/Qwen3-32B-AWQ":              "dense, 4-bit AWQ, ~20 GB VRAM",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ":   "dense, 4-bit AWQ, ~40 GB VRAM",
 }
 _VLLM_MODEL_MIN_DISK_GB: dict[str, int] = {
-    "deepseek-ai/DeepSeek-V4-Flash": 30,
-    "Qwen/Qwen2.5-72B-Instruct":     55,
-    "Qwen/Qwen3-32B":                22,
-    "Qwen/Qwen3-30B-A3B":            20,
+    "deepseek-ai/DeepSeek-V4-Flash":   30,
+    "Qwen/Qwen3-32B-AWQ":              25,
+    "Qwen/Qwen2.5-72B-Instruct-AWQ":   45,
 }
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
@@ -728,8 +726,16 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     # Stop any prior server in its own SSH session first — never chain the kill
     # with the launch (see _stop_vllm_cmd: pkill -f would match the launching
     # shell's own argv and kill it before `echo $!`, the "no PID returned" bug).
+    # Pre-Ampere GPUs (Titan RTX et al., compute cap < 8.0) can't run bfloat16,
+    # which most checkpoints default to; force --dtype half there so the engine
+    # doesn't die at init with "Engine core initialization failed".
+    dtype = _gpu_vllm_dtype(gpu)
+    if dtype:
+        G.console.print(
+            f"[dim]GPU lacks bfloat16 support — launching with --dtype {dtype}[/]"
+        )
     _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
-    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu), timeout=60)
+    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
         raise G.MichaelError(
@@ -770,6 +776,19 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
         if "ready" in cp.stdout:
             server_ready = True
             break
+        # Fail fast if the engine crashed instead of waiting out the 40-min ceiling.
+        live = _gpu_ssh_run(
+            gpu, f"kill -0 {pid} 2>/dev/null && echo alive || echo dead", timeout=30
+        )
+        if "alive" not in live.stdout:
+            log = _gpu_ssh_run(
+                gpu,
+                "echo '--- /tmp/vllm.log (last 40 lines) ---'; tail -40 /tmp/vllm.log 2>&1",
+                timeout=60,
+            ).stdout
+            raise G.MichaelError(
+                f"vLLM engine exited during startup (pid={pid}):\n{log.strip()}"
+            )
         tail_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null", timeout=60)
         tail_line = _ANSI.sub("", tail_cp.stdout.strip().replace("\r", " "))
         G.console.print(
