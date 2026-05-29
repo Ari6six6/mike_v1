@@ -587,6 +587,37 @@ def test_appmodel_missing_raises(home, workspace):
         am.load_model(p, "ghost", "v0")
 
 
+# ---- vLLM launch command (regression: "no PID returned") -----------------
+
+def test_start_vllm_cmd_has_no_pkill():
+    """The launch command must not chain a pkill -f against the server module
+    path: its own shell argv contains that path, so pkill would kill the shell
+    before `echo $!` runs (empty stdout -> "vLLM failed to launch")."""
+    from michael.backends import _start_vllm_cmd
+    from michael.config import GpuConfig
+    cmd = _start_vllm_cmd(GpuConfig(model_repo="org/model"), ngpu=1)
+    assert "pkill" not in cmd
+    assert cmd.rstrip().endswith("echo $!")
+    assert "org/model" in cmd
+    assert "nohup python -m vllm.entrypoints.openai.api_server" in cmd
+
+
+def test_stop_vllm_cmd_pattern_excludes_own_command_line():
+    """The kill pattern must match a real vLLM process but NOT the stop
+    command's own argv, otherwise pkill self-terminates its shell."""
+    import re
+    from michael.backends import _stop_vllm_cmd
+    cmd = _stop_vllm_cmd()
+    assert "pkill" in cmd
+    found = re.search(r"pkill -f '([^']+)'", cmd)
+    assert found, cmd
+    pattern = found.group(1)
+    # self-exclusion: the pattern does not match the command line it lives in
+    assert re.search(pattern, cmd) is None
+    # but it still matches a genuine running vLLM server
+    assert re.search(pattern, "python -m vllm.entrypoints.openai.api_server --model x")
+
+
 # ---- security: forge_tool requires confirmation -------------------------
 
 import michael.agent as agent

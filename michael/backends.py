@@ -180,16 +180,34 @@ def _start_ollama_cmd(gpu: GpuConfig) -> str:
     )
 
 
+def _stop_vllm_cmd() -> str:
+    """Kill any running vLLM server.
+
+    This MUST run in its own SSH session — never chained ahead of the launch
+    command. `pkill -f` matches against the *full command line* of every
+    process, and the launch command's own argv contains the server module
+    path, so chaining `pkill -f` with the launch makes pkill kill the very
+    shell that is about to `echo $!` — the bug behind "vLLM failed to launch
+    (no PID returned)". The `[v]llm` bracket is the standard self-exclusion
+    trick: the regex matches a real `vllm.…` process but not this command's
+    own argv (which contains the literal text `[v]llm.…`). The trailing
+    `true` keeps the exit status 0 when no server was running.
+    """
+    return "pkill -f '[v]llm.entrypoints.openai.api_server' 2>/dev/null; true"
+
+
 def _start_vllm_cmd(gpu: GpuConfig, ngpu: int = 1) -> str:
     """Background vLLM api_server detached from the SSH session, print its PID.
 
-    Three statements, semicolon-separated:
-      1. pkill any existing vllm server (ignored if none)
-      2. touch the log so we can prove the redirect ran even if vllm crashes
-      3. nohup the server with full std-stream redirection, echo the PID
+    Two statements, semicolon-separated:
+      1. touch the log so we can prove the redirect ran even if vllm crashes
+      2. nohup the server with full std-stream redirection, echo the PID
+
+    Killing a prior server is intentionally NOT done here — call
+    `_stop_vllm_cmd` in a separate SSH session first. See `_stop_vllm_cmd`
+    for why the two must never be chained in one shell.
     """
     return (
-        "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null; "
         "touch /tmp/vllm.log; "
         f"nohup python -m vllm.entrypoints.openai.api_server "
         f"--model {gpu.model_repo} "
@@ -216,6 +234,7 @@ def _restart_vllm_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 1800) -> None:
     ngpu_str = ngpu_cp.stdout.strip()
     ngpu = int(ngpu_str) if ngpu_str.isdigit() and int(ngpu_str) > 0 else 1
 
+    _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
     cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
