@@ -29,6 +29,10 @@ TOOL_SCHEMA = {
                     "type": "string",
                     "description": "Nmap timing template: T1 (slow) to T5 (insane). Default T3.",
                 },
+                "max_seconds": {
+                    "type": "integer",
+                    "description": "Wall-clock budget for the Python fallback scan (used only when nmap is unavailable). Returns partial results if exceeded. Default 30.",
+                },
                 "authorized_by": {
                     "type": "string",
                     "description": (
@@ -59,6 +63,7 @@ def port_scan(
     ports: str = "1-1000",
     timing: str = "T3",
     authorized_by: str = "",
+    max_seconds: int = 30,
     **kwargs: Any,
 ) -> str:
     if not authorized_by or not authorized_by.strip():
@@ -83,6 +88,11 @@ def port_scan(
         return f"{auth_banner}\n\n{out}"
     except FileNotFoundError:
         pass  # nmap not installed, fall back
+    except subprocess.TimeoutExpired:
+        return (
+            f"{auth_banner}\nnmap timed out after 180s on {target} (ports {ports}). "
+            f"Try a smaller port range or a faster timing template (e.g. T4)."
+        )
 
     # Python socket connect scan fallback
     try:
@@ -96,8 +106,19 @@ def port_scan(
     except ValueError:
         return f"error: invalid port spec {ports!r}"
 
+    # Parallel + wall-clock bounded — sequential scan of a large range can run for hours
+    import concurrent.futures
+    import threading
+    import time
+
+    deadline = time.monotonic() + max(1, int(max_seconds))
     open_ports: list[tuple[int, str]] = []
-    for port in port_list:
+    lock = threading.Lock()
+    timed_out = False
+
+    def probe(port: int) -> None:
+        if time.monotonic() >= deadline:
+            return
         try:
             with socket.create_connection((target, port), timeout=0.5) as s:
                 # Grab banner if available
@@ -106,15 +127,27 @@ def port_scan(
                     banner = s.recv(256).decode("utf-8", errors="replace").strip()[:80]
                 except Exception:
                     banner = ""
-                open_ports.append((port, banner))
+                with lock:
+                    open_ports.append((port, banner))
         except (socket.timeout, ConnectionRefusedError, OSError):
             pass
 
-    if not open_ports:
-        return f"{auth_banner}\nno open ports found on {target} in range {ports}"
+    workers = min(200, max(1, len(port_list)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(probe, p): p for p in port_list}
+        for fut in concurrent.futures.as_completed(futures):
+            if time.monotonic() >= deadline:
+                timed_out = True
+                for f in futures:
+                    f.cancel()  # cancels only not-yet-started tasks
+                break
 
-    lines = [f"{auth_banner}", f"open ports on {target} ({len(open_ports)} found):"]
-    for port, banner in open_ports:
+    note = f" (partial — stopped at {max_seconds}s budget)" if timed_out else ""
+    if not open_ports:
+        return f"{auth_banner}\nno open ports found on {target} in range {ports}{note}"
+
+    lines = [f"{auth_banner}", f"open ports on {target} ({len(open_ports)} found){note}:"]
+    for port, banner in sorted(open_ports):
         b = f"  [{banner}]" if banner else ""
         lines.append(f"  {port}/tcp  OPEN{b}")
     return "\n".join(lines)
