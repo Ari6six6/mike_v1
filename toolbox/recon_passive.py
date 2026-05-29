@@ -55,7 +55,7 @@ def _run(name: str, **kwargs) -> str:
 
 
 def recon_passive(domain: str, **kwargs) -> str:
-    domain = domain.strip().lstrip("https://").lstrip("http://").rstrip("/").split("/")[0]
+    domain = domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/").split("/")[0]
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"https://{domain}"
 
