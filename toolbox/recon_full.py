@@ -85,7 +85,7 @@ def recon_full(domain: str, authorized_by: str = "", ports: str = "1-1024", **kw
     if not authorized_by or not authorized_by.strip():
         return _BLOCKED
 
-    domain = domain.strip().lstrip("https://").lstrip("http://").rstrip("/").split("/")[0]
+    domain = domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/").split("/")[0]
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"https://{domain}"
 
