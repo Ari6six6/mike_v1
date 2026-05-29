@@ -35,6 +35,7 @@ from michael.backends import (
     _ssh_preflight,
     _start_ollama_cmd,
     _start_vllm_cmd,
+    _stop_vllm_cmd,
     gpu_port_forward_cmd,
     llm_client,
     make_backend,
@@ -708,6 +709,10 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
         G.console.print("[green]vLLM installed[/]")
 
     # ── Start vLLM server ──
+    # Stop any prior server in its own SSH session first — never chain the kill
+    # with the launch (see _stop_vllm_cmd: pkill -f would match the launching
+    # shell's own argv and kill it before `echo $!`, the "no PID returned" bug).
+    _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
     cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
