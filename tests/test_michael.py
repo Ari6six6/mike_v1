@@ -603,6 +603,10 @@ def test_start_vllm_cmd_has_no_pkill():
     # (vast images often have no bare `python` -> nohup: No such file).
     assert 'nohup "$PY" -m vllm.entrypoints.openai.api_server' in cmd
     assert "nohup python -m" not in cmd
+    # no dtype override by default; explicit dtype is rendered as --dtype
+    assert "--dtype" not in cmd
+    cmd_half = _start_vllm_cmd(GpuConfig(model_repo="org/model"), ngpu=1, dtype="half")
+    assert "--dtype half" in cmd_half
 
 
 def test_gpu_py_resolver_selects_available_interpreter():
