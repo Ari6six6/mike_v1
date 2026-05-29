@@ -613,6 +613,16 @@ def test_start_vllm_cmd_has_no_pkill():
     assert "--quantization awq" in cmd_x
 
 
+def test_prompt_backend_selection(monkeypatch):
+    """Backend chooser maps numbers/names to vllm|ollama and keeps current on junk."""
+    import michael.cli as cli
+    cases = [("2", "vllm", "ollama"), ("1", "ollama", "vllm"),
+             ("ollama", "vllm", "ollama"), ("zzz", "vllm", "vllm")]
+    for answer, current, expected in cases:
+        monkeypatch.setattr(cli.typer, "prompt", lambda *a, **k: answer)
+        assert cli._prompt_backend_selection(current) == expected
+
+
 def test_gpu_py_resolver_selects_available_interpreter():
     """_GPU_PY is valid POSIX sh and resolves "$PY" to a real interpreter."""
     import os

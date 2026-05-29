@@ -291,6 +291,29 @@ def _prompt_model_selection(current: str, backend: str = "ollama") -> str:
     return current or model_list[0]
 
 
+def _prompt_backend_selection(current: str) -> str:
+    """Interactive chooser for the inference backend. Returns 'vllm' or 'ollama'."""
+    options = [
+        ("vllm", "best on modern GPUs (Ampere/Ada+); MoE & AWQ models"),
+        ("ollama", "bundles its own CUDA runtime; works on older GPUs/drivers"),
+    ]
+    G.console.print("\n[bold]Inference backend:[/]")
+    for i, (name, desc) in enumerate(options, 1):
+        marker = " [green]← current[/]" if name == current else ""
+        G.console.print(f"  [cyan]{i}.[/] {name}  [dim]({desc})[/]{marker}")
+    default_idx = next((i for i, (n, _) in enumerate(options, 1) if n == current), 1)
+    raw = typer.prompt("Backend", default=str(default_idx)).strip()
+    try:
+        idx = int(raw)
+        if 1 <= idx <= len(options):
+            return options[idx - 1][0]
+    except ValueError:
+        if raw in ("vllm", "ollama"):
+            return raw
+    G.console.print(f"[yellow]invalid choice, keeping {current}[/]")
+    return current
+
+
 def _select_vast_instance(cfg: "Config", gpu: "GpuConfig") -> bool:
     """List Vast.ai instances and let user pick one. Populates gpu in-place.
 
@@ -723,6 +746,27 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
             raise G.MichaelError(f"vLLM install failed:\n{(cp.stderr or cp.stdout)[:500]}")
         G.console.print("[green]vLLM installed[/]")
 
+    # ── Preflight: torch must be able to talk to this GPU's driver ──
+    # pip's torch is built for a recent CUDA; on older cards (e.g. Titan RTX)
+    # the driver can be too old, and vLLM dies deep in engine init with a
+    # cryptic stack. Catch it here with an actionable message instead.
+    cp = _gpu_ssh_run(
+        gpu,
+        _GPU_PY + '"$PY" -c "import torch; torch.zeros(1).cuda()" 2>&1 && echo CUDA_OK',
+        timeout=120,
+    )
+    if "CUDA_OK" not in cp.stdout:
+        out = (cp.stdout + cp.stderr).strip()
+        hint = ""
+        if "too old" in out.lower() or ("driver" in out.lower() and "cuda" in out.lower()):
+            hint = (
+                "\n\nThe installed torch needs a newer CUDA than this GPU's driver "
+                "supports — common on older cards. Either rerun `michael gpu up` and "
+                "choose the 'ollama' backend (it bundles its own CUDA runtime), or "
+                "use a newer GPU (Ampere/Ada, e.g. A100/L40/RTX 4090)."
+            )
+        raise G.MichaelError(f"torch cannot initialize CUDA on this GPU:\n{out[-800:]}{hint}")
+
     # ── Start vLLM server ──
     # Stop any prior server in its own SSH session first — never chain the kill
     # with the launch (see _stop_vllm_cmd: pkill -f would match the launching
@@ -884,22 +928,25 @@ def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
             f"  3. If that works, run `michael gpu` again."
         )
 
-    # ── Auto-detect what's already installed, override config if needed ──
+    # ── Detect what's installed, to default the chooser sensibly ──
     cp_ollama = _gpu_ssh_run(gpu, "command -v ollama >/dev/null 2>&1 && echo yes || echo no", timeout=30)
-    cp_vllm = _gpu_ssh_run(gpu, "python -c 'import vllm' 2>/dev/null && echo yes || echo no", timeout=30)
+    cp_vllm = _gpu_ssh_run(
+        gpu, _GPU_PY + '"$PY" -c "import vllm" 2>/dev/null && echo yes || echo no', timeout=30
+    )
     has_ollama = "yes" in cp_ollama.stdout
     has_vllm = "yes" in cp_vllm.stdout
 
-    if has_ollama and not has_vllm and gpu.inference_backend != "ollama":
-        G.console.print("[dim]detected existing Ollama — using ollama backend[/]")
-        gpu.inference_backend = "ollama"
-        cfg.gpu = gpu
-        cfg.save()
-    elif has_vllm and not has_ollama and gpu.inference_backend != "vllm":
-        G.console.print("[dim]detected existing vLLM — using vllm backend[/]")
-        gpu.inference_backend = "vllm"
-        cfg.gpu = gpu
-        cfg.save()
+    default_backend = gpu.inference_backend
+    if has_ollama and not has_vllm:
+        default_backend = "ollama"
+    elif has_vllm and not has_ollama:
+        default_backend = "vllm"
+
+    # ── Pick the gear (authoritative) and the model, now that SSH is up ──
+    gpu.inference_backend = _prompt_backend_selection(default_backend)
+    gpu.model_repo = _prompt_model_selection(gpu.model_repo, backend=gpu.inference_backend)
+    cfg.gpu = gpu
+    cfg.save()
 
     # ── Dispatch to backend-specific setup ──
     if gpu.inference_backend == "vllm":
@@ -949,11 +996,7 @@ def cmd_gpu_up() -> None:
                 "Check ssh_key_path in config or try ssh manually."
             )
 
-    # Ask which model, then run the full setup protocol
-    gpu.model_repo = _prompt_model_selection(gpu.model_repo, backend=gpu.inference_backend)
-    cfg.gpu = gpu
-    cfg.save()
-
+    # Backend + model are chosen inside the protocol, once SSH is confirmed.
     _run_gpu_setup_protocol(cfg, gpu)
 
 
