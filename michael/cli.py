@@ -609,7 +609,7 @@ def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
         raise G.MichaelError(f"ollama died shortly after launch (pid={pid}):\n{cp.stdout.strip()}")
 
     # ── Wait for the endpoint to answer ──
-    _max_wait_s = 60
+    _max_wait_s = 120
     _elapsed = 0
     daemon_ready = False
     while _elapsed < _max_wait_s:
@@ -667,11 +667,11 @@ def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
         _gpu_ssh_run(
             gpu,
             "rm -f /tmp/ollama_pull.exit && "
-            "( nohup bash -c "
+            "setsid bash -c "
             f"'ollama pull {gpu.model_repo} > /tmp/ollama_pull.log 2>&1; "
             "echo $? > /tmp/ollama_pull.exit' "
-            "> /dev/null 2>&1 < /dev/null & ) && echo started",
-            timeout=60,
+            "< /dev/null > /dev/null 2>&1 & echo started",
+            timeout=120,
         )
         _max_pull_s = 3600
         _poll_s = 15
