@@ -553,14 +553,39 @@ def _run_ollama_setup(cfg: "Config", gpu: "GpuConfig") -> None:
     # ── Install ollama if missing ──
     cp = _gpu_ssh_run(gpu, "command -v ollama >/dev/null && echo installed || echo missing")
     if "missing" in cp.stdout:
-        G.console.print("[cyan]Installing ollama on the GPU (curl one-liner, ~10 s)…[/]")
-        cp = _gpu_ssh_run(
+        G.console.print("[cyan]Installing ollama on the GPU (may take a minute on slow instances)…[/]")
+        _gpu_ssh_run(
             gpu,
-            "curl -fsSL https://ollama.com/install.sh | sh",
-            timeout=180,
+            "rm -f /tmp/ollama_install.exit && "
+            "( nohup bash -c "
+            "'curl -fsSL https://ollama.com/install.sh | sh > /tmp/ollama_install.log 2>&1; "
+            "echo $? > /tmp/ollama_install.exit' "
+            "> /dev/null 2>&1 < /dev/null & ) && echo started",
+            timeout=30,
         )
-        if cp.returncode != 0:
-            raise G.MichaelError(f"ollama install failed:\n{(cp.stderr or cp.stdout)[:500]}")
+        _max_install_s = 600
+        _poll_s = 5
+        _elapsed = 0
+        while _elapsed < _max_install_s:
+            time.sleep(_poll_s)
+            _elapsed += _poll_s
+            cp = _gpu_ssh_run(
+                gpu, "cat /tmp/ollama_install.exit 2>/dev/null || echo running", timeout=30
+            )
+            done = cp.stdout.strip()
+            if done and done != "running":
+                rc = int(done) if done.lstrip("-").isdigit() else 1
+                if rc != 0:
+                    tail = _gpu_ssh_run(
+                        gpu, "tail -30 /tmp/ollama_install.log 2>/dev/null", timeout=30
+                    ).stdout
+                    raise G.MichaelError(f"ollama install failed (exit {rc}):\n{tail}")
+                break
+        else:
+            tail = _gpu_ssh_run(
+                gpu, "tail -20 /tmp/ollama_install.log 2>/dev/null", timeout=30
+            ).stdout
+            raise G.MichaelError(f"ollama install timed out after {_max_install_s}s:\n{tail}")
         G.console.print("[green]ollama installed[/]")
 
     # ── Ensure ollama daemon is running ──
