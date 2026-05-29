@@ -739,3 +739,58 @@ def test_window_messages_trims_oldest_groups():
     assert _well_formed(out)
     # newest group is always retained
     assert out[-1]["tool_call_id"] == "c9"
+
+
+# ---- recon report: durable per-run persistence --------------------------
+
+import json as _json
+import types as _types
+
+
+def _proj(tmp_path, slug="recone"):
+    return _types.SimpleNamespace(path=str(tmp_path / slug), slug=slug)
+
+
+def test_recon_report_writes_raw_and_report(tmp_path):
+    proj = _proj(tmp_path)
+    captured = [
+        {"tool": "port_scan", "args": {"target": "example.com"},
+         "result": "22/tcp open ssh\n80/tcp open http"},
+        {"tool": "dir_enum", "args": {"base": "http://example.com"},
+         "result": "/admin (403)"},
+    ]
+    agent._write_recon_report(proj, captured, reason="committed")
+
+    recon = tmp_path / "recone" / "recon"
+    raw = (recon / "raw.jsonl").read_text().strip().splitlines()
+    assert len(raw) == 2
+    rec0 = _json.loads(raw[0])
+    assert rec0["tool"] == "port_scan"
+    assert "22/tcp" in rec0["result"]
+    assert rec0["reason"] == "committed"
+
+    report = (recon / "report.md").read_text()
+    assert "port_scan" in report
+    assert "22/tcp open ssh" in report
+    assert "tool results captured: 2" in report
+
+
+def test_recon_report_flags_empty_run_loudly(tmp_path):
+    proj = _proj(tmp_path)
+    agent._write_recon_report(proj, [], reason="no-tool-exit")
+    report = (tmp_path / "recone" / "recon" / "report.md").read_text()
+    assert "NO DATA CAPTURED" in report
+    assert "tool results captured: 0" in report
+
+
+def test_recon_report_appends_across_runs(tmp_path):
+    proj = _proj(tmp_path)
+    agent._write_recon_report(
+        proj, [{"tool": "a", "args": {}, "result": "r1"}], reason="committed")
+    agent._write_recon_report(
+        proj, [{"tool": "b", "args": {}, "result": "r2"}], reason="max-turns")
+    raw = (tmp_path / "recone" / "recon" / "raw.jsonl").read_text().strip().splitlines()
+    assert len(raw) == 2
+    # report.md reflects the most recent run only
+    report = (tmp_path / "recone" / "recon" / "report.md").read_text()
+    assert "exit reason: max-turns" in report

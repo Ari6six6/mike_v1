@@ -181,6 +181,87 @@ def _write_news(project: Project, content: str) -> None:
         pass
 
 
+def _write_recon_report(
+    project: Project, captured: list[dict[str, Any]], *, reason: str
+) -> None:
+    """Persist every captured tool result for this run, on every exit path.
+
+    Writes two files under <project>/recon/:
+      - raw.jsonl  : append-only machine-readable feed (one full result per line),
+                     the durable source of truth for the modeling module.
+      - report.md  : structured, human-readable breakdown of the run.
+
+    This runs from the agent loop boundary — not from deep inside tool dispatch —
+    so a run can never finish without leaving a record, regardless of whether the
+    LLM called commit_changes, returned nothing, or errored out. Failures here are
+    surfaced loudly, never swallowed.
+    """
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        recon_dir = pathlib.Path(project.path) / "recon"
+        recon_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Durable raw feed — append full (untruncated) results.
+        with (recon_dir / "raw.jsonl").open("a", encoding="utf-8") as fh:
+            for rec in captured:
+                fh.write(
+                    json.dumps(
+                        {"ts": ts, "reason": reason, **rec},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+
+        # 2. Human-readable report.
+        lines = [
+            f"# Recon report — {project.slug}",
+            "",
+            f"- generated: {ts}",
+            f"- exit reason: {reason}",
+            f"- tool results captured: {len(captured)}",
+            "",
+        ]
+        if not captured:
+            lines += [
+                "## ⚠ NO DATA CAPTURED",
+                "",
+                "No tool returned any output this run. Verify a target was defined "
+                "and that the recon tools actually executed against it.",
+            ]
+        else:
+            lines += ["## Findings by tool", ""]
+            for i, rec in enumerate(captured, 1):
+                tool = rec.get("tool", "?")
+                args = rec.get("args") or {}
+                result = (rec.get("result") or "").strip()
+                lines.append(f"### {i}. {tool}")
+                if args:
+                    lines.append(
+                        f"`args`: `{json.dumps(args, ensure_ascii=False, sort_keys=True)}`"
+                    )
+                lines.append("")
+                if result:
+                    lines += ["```", result, "```", ""]
+                else:
+                    lines += ["_(empty result)_", ""]
+        (recon_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        rel = recon_dir / "report.md"
+        if captured:
+            G.console.print(
+                f"[dim]recon report: {rel} ({len(captured)} result(s))[/]"
+            )
+        else:
+            G.err.print(
+                f"[yellow]⚠  no recon data captured this run — see {rel}[/]"
+            )
+    except Exception as exc:  # never silent
+        G.err.print(f"[red]recon report failed:[/] {exc}")
+
+
 def _rescue_staged(project: Project, pending: PendingChanges) -> None:
     """If the loop exits with uncommitted staged changes, prompt the user to save them."""
     if pending.stage_root is None or not pending.change_log:
@@ -284,6 +365,7 @@ def _run_agent_loop(
     all_tools = TOOLS + dynamic
 
     last_content: str = ""
+    recon_capture: list[dict[str, Any]] = []
     try:
         for turn in range(1, G.MAX_AGENT_TURNS + 1):
             G.console.print(f"[dim]· turn {turn}[/]")
@@ -346,6 +428,7 @@ def _run_agent_loop(
                     G.console.print(content)
                 _write_news(project, last_content)
                 _rescue_staged(project, pending)
+                _write_recon_report(project, recon_capture, reason="no-tool-exit")
                 append_event("agent.ended", {"model": name, "turns": turn}, project=project)
                 return
 
@@ -367,6 +450,10 @@ def _run_agent_loop(
                     messages.append({"role": "tool", "tool_call_id": tc.id,
                                      "content": "Changes committed."})
                 else:
+                    # Capture the full, untruncated result before windowing.
+                    recon_capture.append(
+                        {"tool": tc.name, "args": targs, "result": result}
+                    )
                     if len(result) > _MAX_TOOL_RESULT_CHARS:
                         result = result[:_MAX_TOOL_RESULT_CHARS] + f"\n… [truncated {len(result) - _MAX_TOOL_RESULT_CHARS} chars]"
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
@@ -406,6 +493,7 @@ def _run_agent_loop(
                 else:
                     G.console.print(Panel("Done.", title="⚡ Committed", border_style="green"))
 
+                _write_recon_report(project, recon_capture, reason="committed")
                 append_event(
                     "agent.ended", {"model": name, "committed": True, "turns": turn},
                     project=project,
@@ -415,6 +503,7 @@ def _run_agent_loop(
     except KeyboardInterrupt:
         pending.discard()
         G.err.print("\nturn aborted by user; pending changes discarded")
+        _write_recon_report(project, recon_capture, reason="aborted")
         append_event("agent.aborted", {}, project=project)
         append_event("agent.ended", {"model": name, "aborted": True}, project=project)
         return
@@ -422,6 +511,7 @@ def _run_agent_loop(
         G.err.print(f"LLM error: {exc}")
         append_event("error", {"where": "agent_loop", "msg": str(exc)}, project=project)
         pending.discard()
+        _write_recon_report(project, recon_capture, reason="error")
         append_event("agent.ended", {"model": name, "error": True}, project=project)
         return
 
@@ -437,6 +527,7 @@ def _run_agent_loop(
     )
     _write_news(project, last_content)
     _rescue_staged(project, pending)
+    _write_recon_report(project, recon_capture, reason="max-turns")
     append_event(
         "agent.ended",
         {"model": name, "turns": G.MAX_AGENT_TURNS, "committed": False},
