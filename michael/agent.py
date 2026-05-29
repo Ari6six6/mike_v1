@@ -36,6 +36,58 @@ from michael.utils import build_header, load_scripture
 _MAX_TOOL_RESULT_CHARS = 8_000
 
 
+def _msg_chars(m: dict[str, Any]) -> int:
+    """Approximate the character weight a message contributes to the request."""
+    n = len(m.get("content") or "")
+    tcs = m.get("tool_calls")
+    if tcs:
+        try:
+            n += len(json.dumps(tcs))
+        except (TypeError, ValueError):
+            pass
+    return n
+
+
+def _window_messages(
+    messages: list[dict[str, Any]], budget: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Bound the rolling message list to *budget* characters.
+
+    Always pins ``messages[0]`` (the H1–H4 system header) and ``messages[1]``
+    (the initial user prompt). The remainder is split into turn-groups — each
+    group begins at an ``assistant`` message and includes the ``tool`` replies
+    that follow it — and the oldest whole groups are dropped until the total
+    fits. Whole groups are kept intact so a ``tool`` reply is never orphaned
+    from the assistant ``tool_calls`` it answers (the chat protocol requires
+    that pairing). The newest group is always retained, even if it alone
+    exceeds the budget. Returns the new list and the number of messages dropped.
+    """
+    if len(messages) <= 2:
+        return messages, 0
+    pinned = messages[:2]
+    tail = messages[2:]
+
+    groups: list[list[dict[str, Any]]] = []
+    for m in tail:
+        if m.get("role") == "assistant" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+
+    used = sum(_msg_chars(m) for m in pinned)
+    kept: list[list[dict[str, Any]]] = []
+    for grp in reversed(groups):
+        grp_chars = sum(_msg_chars(m) for m in grp)
+        if kept and used + grp_chars > budget:
+            break
+        kept.append(grp)
+        used += grp_chars
+    kept.reverse()
+
+    new_messages = pinned + [m for grp in kept for m in grp]
+    return new_messages, len(messages) - len(new_messages)
+
+
 _TAGS_RE = re.compile(r'TOOL_TAGS\s*=\s*\[([^\]]+)\]')
 
 
@@ -235,6 +287,14 @@ def _run_agent_loop(
     try:
         for turn in range(1, G.MAX_AGENT_TURNS + 1):
             G.console.print(f"[dim]· turn {turn}[/]")
+            messages, dropped = _window_messages(messages, G.MAX_CONTEXT_MESSAGE_CHARS)
+            if dropped:
+                G.console.print(
+                    f"[dim]· trimmed {dropped} old message(s) to fit context budget[/]"
+                )
+                append_event(
+                    "context.trimmed", {"dropped": dropped, "turn": turn}, project=project
+                )
             for _attempt in range(2):
                 try:
                     resp = client.chat.completions.create(

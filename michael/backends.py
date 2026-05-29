@@ -123,8 +123,8 @@ def _gpu_ssh_argv(gpu: GpuConfig) -> list[str]:
     return [
         "ssh",
         "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", f"UserKnownHostsFile={G.GPU_KNOWN_HOSTS_PATH}",
         "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
@@ -155,7 +155,8 @@ def gpu_port_forward_cmd(gpu: GpuConfig) -> str:
     return (
         f"ssh -p {gpu.ssh_port} {gpu.ssh_user}@{gpu.ssh_host} "
         f"-L {gpu.gpu_port}:localhost:{gpu.gpu_port} "
-        f"-N -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {key}"
+        f"-N -o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={G.GPU_KNOWN_HOSTS_PATH} -i {key}"
     )
 
 
@@ -325,8 +326,8 @@ def _ensure_tunnel(gpu: GpuConfig) -> None:
             "ssh", "-p", str(gpu.ssh_port), f"{gpu.ssh_user}@{gpu.ssh_host}",
             "-L", f"{gpu.gpu_port}:localhost:{gpu.gpu_port}",
             "-N",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"UserKnownHostsFile={G.GPU_KNOWN_HOSTS_PATH}",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
             "-i", key,
