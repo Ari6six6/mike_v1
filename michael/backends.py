@@ -219,15 +219,8 @@ def _stop_vllm_cmd() -> str:
     return "pkill -f '[v]llm.entrypoints.openai.api_server' 2>/dev/null; true"
 
 
-def _gpu_vllm_dtype(gpu: GpuConfig) -> Optional[str]:
-    """Return 'half' for pre-Ampere GPUs (compute capability < 8.0), else None.
-
-    Qwen3 and most modern checkpoints default to bfloat16, which vLLM refuses on
-    Turing/Volta cards (cc < 8.0) — the engine raises "Engine core
-    initialization failed" within seconds of launch. Those GPUs do support
-    float16, so we force `--dtype half` there. On Ampere+ we return None and let
-    vLLM keep the checkpoint's native dtype.
-    """
+def _gpu_compute_cap(gpu: GpuConfig) -> float:
+    """Return the GPU's CUDA compute capability (e.g. 7.5), or 0.0 if unknown."""
     cp = _gpu_ssh_run(
         gpu,
         "nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1",
@@ -235,27 +228,77 @@ def _gpu_vllm_dtype(gpu: GpuConfig) -> Optional[str]:
     )
     raw = cp.stdout.strip().split("\n")[-1].strip()
     try:
-        cap = float(raw)
+        return float(raw)
     except ValueError:
-        return None
-    return "half" if 0 < cap < 8.0 else None
+        return 0.0
 
 
-def _start_vllm_cmd(gpu: GpuConfig, ngpu: int = 1, dtype: Optional[str] = None) -> str:
+def _gpu_vllm_overrides(gpu: GpuConfig) -> tuple[Optional[str], Optional[str]]:
+    """Return (dtype, quantization) launch overrides for this GPU + model.
+
+    Pre-Ampere cards (compute capability < 8.0, e.g. Titan RTX / Turing) need
+    two things vLLM does not pick for them automatically:
+
+    - `--dtype half`: they can't run bfloat16, which most checkpoints default to.
+      Without this the engine dies at init with "Engine core initialization
+      failed" within seconds.
+    - `--quantization awq` for AWQ checkpoints: vLLM auto-selects the
+      `awq_marlin` kernel, but Marlin requires sm80+, so on Turing it fails
+      fast. The plain `awq` kernel works on sm75.
+
+    On Ampere+ we return (None, None) and let vLLM decide.
+    """
+    cap = _gpu_compute_cap(gpu)
+    if not (0 < cap < 8.0):
+        return None, None
+    quant = "awq" if "awq" in gpu.model_repo.lower() else None
+    return "half", quant
+
+
+def _vllm_crash_report(gpu: GpuConfig) -> str:
+    """Pull the real root cause out of /tmp/vllm.log after an engine crash.
+
+    vLLM's V1 engine runs EngineCore in a child process; the actual error is
+    logged *there*, above the API server's generic "Engine core initialization
+    failed" wrapper. A small tail misses it, so we surface both a grep of the
+    likely root-cause lines and a generous tail of the log.
+    """
+    pattern = (
+        "error|exception|traceback|runtimeerror|valueerror|assert|"
+        "importerror|modulenotfound|out of memory|no kernel image|"
+        "not supported|unsupported|compute capability"
+    )
+    cmd = (
+        "echo '--- likely root cause ---'; "
+        f"grep -niE '{pattern}' /tmp/vllm.log 2>/dev/null | tail -30; "
+        "echo '--- /tmp/vllm.log (last 120 lines) ---'; "
+        "tail -120 /tmp/vllm.log 2>&1"
+    )
+    return _gpu_ssh_run(gpu, cmd, timeout=60).stdout.strip()
+
+
+def _start_vllm_cmd(
+    gpu: GpuConfig,
+    ngpu: int = 1,
+    dtype: Optional[str] = None,
+    quantization: Optional[str] = None,
+) -> str:
     """Background vLLM api_server detached from the SSH session, print its PID.
 
     Two statements, semicolon-separated:
       1. touch the log so we can prove the redirect ran even if vllm crashes
       2. nohup the server with full std-stream redirection, echo the PID
 
-    `dtype`, when given, is passed as `--dtype` (e.g. "half" for pre-Ampere
-    GPUs that can't run bfloat16 — see `_gpu_vllm_dtype`).
+    `dtype` and `quantization`, when given, are passed as `--dtype` /
+    `--quantization` (e.g. "half" + "awq" for pre-Ampere GPUs — see
+    `_gpu_vllm_overrides`).
 
     Killing a prior server is intentionally NOT done here — call
     `_stop_vllm_cmd` in a separate SSH session first. See `_stop_vllm_cmd`
     for why the two must never be chained in one shell.
     """
     dtype_flag = f"--dtype {dtype} " if dtype else ""
+    quant_flag = f"--quantization {quantization} " if quantization else ""
     return (
         "touch /tmp/vllm.log; "
         + _GPU_PY +
@@ -265,6 +308,7 @@ def _start_vllm_cmd(gpu: GpuConfig, ngpu: int = 1, dtype: Optional[str] = None) 
         f"--host 0.0.0.0 "
         f"--tensor-parallel-size {ngpu} "
         f"{dtype_flag}"
+        f"{quant_flag}"
         f">/tmp/vllm.log 2>&1 </dev/null & "
         "echo $!"
     )
@@ -285,9 +329,9 @@ def _restart_vllm_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 1800) -> None:
     ngpu_str = ngpu_cp.stdout.strip()
     ngpu = int(ngpu_str) if ngpu_str.isdigit() and int(ngpu_str) > 0 else 1
 
-    dtype = _gpu_vllm_dtype(gpu)
+    dtype, quant = _gpu_vllm_overrides(gpu)
     _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
-    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype), timeout=60)
+    cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype, quant), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
     if not pid.isdigit():
         raise G.MichaelError(
@@ -312,9 +356,9 @@ def _restart_vllm_on_gpu(gpu: GpuConfig, *, poll_timeout_s: int = 1800) -> None:
             gpu, f"kill -0 {pid} 2>/dev/null && echo alive || echo dead", timeout=30
         )
         if "alive" not in live.stdout:
-            log = _gpu_ssh_run(gpu, "tail -40 /tmp/vllm.log 2>&1", timeout=30).stdout
             raise G.MichaelError(
-                f"vLLM engine exited during startup (pid={pid}):\n{log.strip()}"
+                f"vLLM engine exited during startup (pid={pid}):\n"
+                f"{_vllm_crash_report(gpu)}"
             )
         tail_cp = _gpu_ssh_run(gpu, "tail -2 /tmp/vllm.log 2>/dev/null", timeout=30)
         tail_line = tail_cp.stdout.strip().replace("\r", " ")
