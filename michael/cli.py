@@ -261,34 +261,70 @@ def cmd_config() -> None:
     G.console.print("[green]config saved[/]")
 
 
-def _prompt_model_selection(current: str, backend: str = "ollama") -> str:
-    """Interactive numbered menu for model selection. Returns the chosen tag or HF ID."""
+def _prompt_model_selection(
+    current: str,
+    backend: str = "ollama",
+    custom_models: "list[str] | None" = None,
+) -> str:
+    """Interactive numbered menu for model selection. Returns the chosen tag or HF ID.
+
+    custom_models is a mutable list; any newly entered model is appended in-place
+    so the caller can persist it to config.
+    """
+    if custom_models is None:
+        custom_models = []
+
     if backend == "vllm":
-        model_list = VLLM_SUPPORTED_MODELS
+        builtin = list(VLLM_SUPPORTED_MODELS)
         labels = _VLLM_MODEL_LABELS
+        hint = "HuggingFace model ID, e.g. mistralai/Mistral-7B-Instruct-v0.3"
     else:
-        model_list = SUPPORTED_MODELS
+        builtin = list(SUPPORTED_MODELS)
         labels = {
             "qwen2.5:72b":   "large instruct, ~45 GB VRAM",
             "qwen3:32b":     "dense, ~20 GB VRAM",
             "qwen3:30b-a3b": "MoE, ~18 GB VRAM, more KV cache headroom",
         }
-    G.console.print(f"\n[bold]Available models ({backend}):[/]")
-    for i, tag in enumerate(model_list, 1):
-        marker = " [green]← current[/]" if tag == current else ""
-        G.console.print(f"  [cyan]{i}.[/] {tag}  [dim]({labels.get(tag, '')})[/]{marker}")
+        hint = "Ollama tag, e.g. llama3.1:70b"
 
-    default_idx = model_list.index(current) + 1 if current in model_list else 1
-    raw = typer.prompt("Model", default=str(default_idx)).strip()
+    # merge built-ins + saved custom (dedup, preserve order)
+    all_models: list[str] = list(builtin)
+    for m in custom_models:
+        if m not in all_models:
+            all_models.append(m)
+
+    G.console.print(f"\n[bold]Available models ({backend}):[/]")
+    for i, tag in enumerate(all_models, 1):
+        marker = " [green]← current[/]" if tag == current else ""
+        is_custom = tag not in builtin
+        custom_tag = " [magenta][custom][/]" if is_custom else ""
+        G.console.print(f"  [cyan]{i}.[/] {tag}{custom_tag}  [dim]({labels.get(tag, 'custom')})[/]{marker}")
+    G.console.print(f"  [dim]or type any {hint} to add it[/]")
+
+    default_prompt = str(all_models.index(current) + 1) if current in all_models else str(1)
+    raw = typer.prompt("Model", default=default_prompt).strip()
+
+    # numeric selection
     try:
         idx = int(raw)
-        if 1 <= idx <= len(model_list):
-            return model_list[idx - 1]
+        if 1 <= idx <= len(all_models):
+            return all_models[idx - 1]
     except ValueError:
-        if raw in model_list:
-            return raw
-    G.console.print(f"[yellow]invalid choice, keeping {current or model_list[0]}[/]")
-    return current or model_list[0]
+        pass
+
+    # exact match in combined list
+    if raw in all_models:
+        return raw
+
+    # treat as a new custom model
+    if raw:
+        if raw not in custom_models:
+            custom_models.append(raw)
+            G.console.print(f"[green]Added[/] {raw!r} to your saved model list.")
+        return raw
+
+    G.console.print(f"[yellow]invalid choice, keeping {current or all_models[0]}[/]")
+    return current or all_models[0]
 
 
 def _prompt_backend_selection(current: str) -> str:
@@ -969,7 +1005,17 @@ def _run_gpu_setup_protocol(cfg: "Config", gpu: "GpuConfig") -> None:
 
     # ── Pick the gear (authoritative) and the model, now that SSH is up ──
     gpu.inference_backend = _prompt_backend_selection(default_backend)
-    gpu.model_repo = _prompt_model_selection(gpu.model_repo, backend=gpu.inference_backend)
+    custom = (
+        gpu.custom_vllm_models if gpu.inference_backend == "vllm" else gpu.custom_ollama_models
+    )
+    gpu.model_repo = _prompt_model_selection(
+        gpu.model_repo, backend=gpu.inference_backend, custom_models=custom
+    )
+    # write back the (possibly extended) custom list
+    if gpu.inference_backend == "vllm":
+        gpu.custom_vllm_models = custom
+    else:
+        gpu.custom_ollama_models = custom
     cfg.gpu = gpu
     cfg.save()
 
