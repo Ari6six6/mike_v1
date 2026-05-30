@@ -618,14 +618,47 @@ def _http_error_message(r: httpx.Response, model: str) -> str:
     return msg
 
 
+_TEXT_TOOL_CALL_RE = __import__("re").compile(r"<tool_call>(.*?)</tool_call>", __import__("re").DOTALL)
+
+
+def _parse_text_tool_calls(content: str) -> list:
+    """Parse <tool_call>JSON</tool_call> blocks from a model's text response."""
+    results = []
+    for i, m in enumerate(_TEXT_TOOL_CALL_RE.finditer(content)):
+        try:
+            parsed = _json.loads(m.group(1).strip())
+        except _json.JSONDecodeError as exc:
+            G.err.print(f"[yellow]text tool call {i}: malformed JSON — skipped: {exc}[/]")
+            continue
+        name = parsed.get("name", "")
+        if not name:
+            G.err.print(f"[yellow]text tool call {i}: missing 'name' — skipped[/]")
+            continue
+        arguments = parsed.get("arguments", {})
+        results.append(
+            _ToolCall(
+                id=f"call_txt_{i}",
+                name=name,
+                arguments=_json.dumps(arguments) if isinstance(arguments, dict) else str(arguments),
+            )
+        )
+    return results
+
+
 class _Completions:
     def __init__(
-        self, endpoint: str, http: httpx.Client, headers: dict, enable_thinking: bool = False
+        self,
+        endpoint: str,
+        http: httpx.Client,
+        headers: dict,
+        enable_thinking: bool = False,
+        tool_uncapable: bool = False,
     ) -> None:
         self._endpoint = endpoint
         self._http = http
         self._headers = headers
         self._enable_thinking = enable_thinking
+        self._tool_uncapable = tool_uncapable
 
     def create(
         self,
@@ -640,11 +673,11 @@ class _Completions:
         **_kw: Any,
     ) -> Any:
         body: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
-        if tools:
+        if tools and not self._tool_uncapable:
             body["tools"] = tools
         if self._enable_thinking and not any(m.get("role") == "tool" for m in messages):
             body["chat_template_kwargs"] = {"enable_thinking": True}
-        if tool_choice is not None:
+        if tool_choice is not None and not self._tool_uncapable:
             body["tool_choice"] = tool_choice
         if stream and stream_options:
             body["stream_options"] = stream_options
@@ -692,15 +725,19 @@ class _Completions:
         choices = []
         for c in data.get("choices", []):
             m = c.get("message", {})
-            tcs = m.get("tool_calls") or []
-            tool_calls: Optional[list] = [
-                _ToolCall(
-                    id=tc.get("id", ""),
-                    name=tc.get("function", {}).get("name", ""),
-                    arguments=tc.get("function", {}).get("arguments", ""),
-                )
-                for tc in tcs
-            ] or None
+            if self._tool_uncapable:
+                text_tcs = _parse_text_tool_calls(m.get("content") or "")
+                tool_calls: Optional[list] = text_tcs or None
+            else:
+                tcs = m.get("tool_calls") or []
+                tool_calls = [
+                    _ToolCall(
+                        id=tc.get("id", ""),
+                        name=tc.get("function", {}).get("name", ""),
+                        arguments=tc.get("function", {}).get("arguments", ""),
+                    )
+                    for tc in tcs
+                ] or None
             choices.append(
                 _Choice(
                     content=m.get("content"),
@@ -735,20 +772,31 @@ class _ChatCompletions:
 
 
 class LLMClient:
-    def __init__(self, endpoint: str, api_key: str = "", enable_thinking: bool = False) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str = "",
+        enable_thinking: bool = False,
+        tool_uncapable: bool = False,
+    ) -> None:
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         self._http = httpx.Client(headers=headers, timeout=120)
-        _completions = _Completions(endpoint, self._http, headers, enable_thinking)
+        _completions = _Completions(endpoint, self._http, headers, enable_thinking, tool_uncapable)
         self.chat = _ChatCompletions(_completions)
 
     def close(self) -> None:
         self._http.close()
 
 
-def llm_client(endpoint: str, api_key: str = "", enable_thinking: bool = False) -> LLMClient:
-    return LLMClient(endpoint, api_key, enable_thinking)
+def llm_client(
+    endpoint: str,
+    api_key: str = "",
+    enable_thinking: bool = False,
+    tool_uncapable: bool = False,
+) -> LLMClient:
+    return LLMClient(endpoint, api_key, enable_thinking, tool_uncapable)
 
 
 def _require_endpoint(profile: ModelProfile, name: str) -> str:

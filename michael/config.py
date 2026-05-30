@@ -20,6 +20,7 @@ class ModelProfile:
     request_timeout_s: int = 120
     endpoint: Optional[str] = None
     enable_thinking: bool = False
+    tool_uncapable: bool = False
 
 
 @dataclass
@@ -190,6 +191,7 @@ CONFIG_HELP: dict[str, str] = {
     "models.god.vast_instance_id": "Numeric ID of the rented GPU instance.",
     "models.god.served_model_name": "Model name sent in API requests. Auto-filled by `michael gpu up`. For vllm: HF ID (e.g. 'deepseek-ai/DeepSeek-V4-Flash'); for ollama: tag.",
     "models.god.request_timeout_s": "LLM request timeout (seconds).",
+    "models.god.tool_uncapable": "If true, skip tools/tool_choice params and use text-format tool calling instead (for models without a function-calling template).",
     "gpu.inference_backend": "Inference backend: 'vllm' (default) or 'ollama'. vLLM gives better MoE parallelism and agentic throughput.",
     "gpu.model_repo": "For vllm: HuggingFace ID e.g. 'deepseek-ai/DeepSeek-V4-Flash'. For ollama: tag e.g. 'qwen2.5:72b'.",
     "gpu.gpu_port": "OpenAI-compat port on the GPU (ollama default: 11434, vllm default: 8000 — configurable).",

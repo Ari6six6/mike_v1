@@ -323,7 +323,7 @@ def _run_agent_loop(
                 G.console.print("[yellow]model server unreachable — restarting ollama...[/]")
                 _restart_ollama_on_gpu(cfg.gpu)
 
-    client = llm_client(endpoint, "", profile.enable_thinking)
+    client = llm_client(endpoint, "", profile.enable_thinking, profile.tool_uncapable)
     backend = make_backend(cfg)
     G.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -352,17 +352,23 @@ def _run_agent_loop(
     )
 
     scripture = load_scripture(cfg.scripture_dir, mode=project.mode)
-    header = build_header(project, base_prompt, scripture)
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": header},
-        {"role": "user", "content": prompt},
-    ]
-    pending = PendingChanges()
     dynamic = _load_dynamic_tools(project.path, mode=project.mode)
     if dynamic:
         names = ", ".join(d["function"]["name"] for d in dynamic if "function" in d)
         G.console.print(f"[dim]loaded {len(dynamic)} dynamic tool(s): {names}[/]")
     all_tools = TOOLS + dynamic
+    header = build_header(
+        project,
+        base_prompt,
+        scripture,
+        tool_schemas=all_tools if profile.tool_uncapable else None,
+        tool_uncapable=profile.tool_uncapable,
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": header},
+        {"role": "user", "content": prompt},
+    ]
+    pending = PendingChanges()
 
     last_content: str = ""
     recon_capture: list[dict[str, Any]] = []
