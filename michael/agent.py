@@ -31,7 +31,7 @@ from michael.tools import (
     commit_pending,
     dispatch_tool_call,
 )
-from michael.utils import build_header, load_scripture
+from michael.utils import build_header, build_slim_header, load_scripture
 
 _MAX_TOOL_RESULT_CHARS = 8_000
 
@@ -357,13 +357,20 @@ def _run_agent_loop(
         names = ", ".join(d["function"]["name"] for d in dynamic if "function" in d)
         G.console.print(f"[dim]loaded {len(dynamic)} dynamic tool(s): {names}[/]")
     all_tools = TOOLS + dynamic
-    header = build_header(
-        project,
-        base_prompt,
-        scripture,
-        tool_schemas=all_tools if profile.tool_uncapable else None,
-        tool_uncapable=profile.tool_uncapable,
-    )
+    if profile.slim_context:
+        header = build_slim_header(
+            project,
+            base_prompt,
+            tool_schemas=all_tools,
+        )
+    else:
+        header = build_header(
+            project,
+            base_prompt,
+            scripture,
+            tool_schemas=all_tools if profile.tool_uncapable else None,
+            tool_uncapable=profile.tool_uncapable,
+        )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": header},
         {"role": "user", "content": prompt},
