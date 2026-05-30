@@ -498,10 +498,51 @@ def _toolbox_listing(project_path: str, mode: str = "recon") -> str:
     return "\n".join(lines)
 
 
+def _build_text_tool_protocol(tool_schemas: list) -> str:
+    """Render a text-format tool calling instruction block + compact tool catalog."""
+    lines = [
+        "This model does not use the native function-calling API.",
+        "To call a tool, output EXACTLY this format — one block per call, on its own line:",
+        "",
+        '  <tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>',
+        "",
+        "Rules:",
+        "  - The content inside the tags must be valid JSON with keys 'name' and 'arguments'.",
+        "  - You may emit multiple <tool_call> blocks in one response; all will execute.",
+        "  - To finish without calling a tool, simply omit any <tool_call> blocks.",
+        "  - To commit and exit, use commit_changes via a <tool_call> block.",
+        "  - Do NOT wrap the tag in markdown fences or embed it inside prose.",
+        "",
+        "Available tools:",
+        "",
+    ]
+    for schema in tool_schemas:
+        fn = schema.get("function", {})
+        name = fn.get("name", "")
+        if not name:
+            continue
+        desc = fn.get("description", "").split("\n")[0][:200]
+        props = fn.get("parameters", {}).get("properties", {})
+        required = fn.get("parameters", {}).get("required", [])
+        lines.append(f"  {name}")
+        if desc:
+            lines.append(f"    {desc}")
+        for pname, pdef in props.items():
+            ptype = pdef.get("type", "any")
+            pdesc = pdef.get("description", "")[:120]
+            req = " [required]" if pname in required else ""
+            lines.append(f"    - {pname} ({ptype}){req}: {pdesc}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def build_header(
     project: "Project",
     system_prompt: str,
     scripture: str = "",
+    *,
+    tool_schemas: "Optional[list]" = None,
+    tool_uncapable: bool = False,
 ) -> str:
     """Pack the four-header context package sent to a fresh LLM instance."""
     prompts = _prompt_history_lines(project)
@@ -526,6 +567,14 @@ def build_header(
         "=== H4: Protocol ===",
         protocol,
         "",
+    ]
+    if tool_uncapable and tool_schemas:
+        parts += [
+            "=== Tool Calling Protocol (TEXT FORMAT — REQUIRED) ===",
+            _build_text_tool_protocol(tool_schemas),
+            "",
+        ]
+    parts += [
         "=== Toolbox ===",
         toolbox,
         "",
