@@ -57,6 +57,8 @@ class GpuConfig:
     model_repo: str = "qwen2.5:72b"  # Ollama tag OR HuggingFace ID depending on inference_backend
     gpu_port: int = 11434
     inference_backend: str = "vllm"  # "vllm" or "ollama" — auto-detected on gpu up
+    custom_vllm_models: list = field(default_factory=list)   # user-added HuggingFace model IDs
+    custom_ollama_models: list = field(default_factory=list)  # user-added Ollama tags
 
 
 @dataclass
