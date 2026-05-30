@@ -21,6 +21,7 @@ class ModelProfile:
     endpoint: Optional[str] = None
     enable_thinking: bool = False
     tool_uncapable: bool = False
+    slim_context: bool = False  # strip H1-H4 package; send only minimal prompt + tool list
 
 
 @dataclass

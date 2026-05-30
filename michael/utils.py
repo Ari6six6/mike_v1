@@ -498,6 +498,56 @@ def _toolbox_listing(project_path: str, mode: str = "recon") -> str:
     return "\n".join(lines)
 
 
+def build_slim_header(
+    project: "Project",
+    system_prompt: str,
+    tool_schemas: "Optional[list]" = None,
+) -> str:
+    """Minimal system prompt for small/weak models: no filesystem dump, no protocol wall.
+
+    Sends only a short instruction block + compact tool list. Total size stays
+    well under 1 K tokens so 1-2B parameter instruct models can actually follow it.
+    """
+    parts = [
+        system_prompt.strip() if system_prompt.strip() else
+        "You are a capable AI assistant operating inside the Michael agent framework.",
+        "",
+        "To call a tool, output EXACTLY this format on its own line:",
+        '  <tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>',
+        "",
+        "Rules:",
+        "  - Use <tool_call> to read files, run code, write files, etc.",
+        "  - You may emit multiple blocks per response; all will execute.",
+        "  - Omit all <tool_call> blocks to reply without calling a tool.",
+        "  - Use commit_changes when you have finished and want to save work.",
+        "",
+    ]
+    if tool_schemas:
+        parts.append("Available tools:")
+        parts.append("")
+        for schema in tool_schemas:
+            fn = schema.get("function", {})
+            name = fn.get("name", "")
+            if not name:
+                continue
+            desc = fn.get("description", "").split("\n")[0][:150]
+            props = fn.get("parameters", {}).get("properties", {})
+            required = fn.get("parameters", {}).get("required", [])
+            parts.append(f"  {name}")
+            if desc:
+                parts.append(f"    {desc}")
+            for pname, pdef in props.items():
+                ptype = pdef.get("type", "any")
+                req = " [required]" if pname in required else ""
+                parts.append(f"    - {pname} ({ptype}){req}")
+            parts.append("")
+    parts += [
+        f"Project: {project.name}",
+        f"Root: {project.path}",
+    ]
+    return "\n".join(parts)
+
+
 def _build_text_tool_protocol(tool_schemas: list) -> str:
     """Render a text-format tool calling instruction block + compact tool catalog."""
     lines = [
