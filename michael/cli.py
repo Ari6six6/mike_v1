@@ -1222,7 +1222,7 @@ def cmd_run(prompt: str) -> None:
     _run_agent_loop(project, cfg, name, profile, prompt, verb_label="run")
 
 
-def cmd_ask(prompt: str, system: str = "") -> None:
+def cmd_ask(prompt: str, system: str = "", file: Optional[str] = None) -> None:
     """Bare chat: no agent loop, no context package, no tools. Just a raw model reply."""
     cfg = Config.load()
     name, profile = cfg.get_model()
@@ -1230,10 +1230,18 @@ def cmd_ask(prompt: str, system: str = "") -> None:
     _ssh_preflight(cfg)
     if cfg.gpu.ssh_host:
         _ensure_tunnel(cfg.gpu)
+    user_content = prompt
+    if file:
+        p = pathlib.Path(file).expanduser()
+        if not p.exists():
+            G.err.print(f"file not found: {p}")
+            raise typer.Exit(1)
+        file_text = p.read_text(errors="replace")
+        user_content = f"{prompt}\n\n--- {p.name} ---\n{file_text}" if prompt else file_text
     messages: list[dict] = []
     if system:
         messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": user_content})
     client = llm_client(endpoint)
     G.console.print(f"[dim]michael ask · {name} ({profile.served_model_name})[/]")
     try:
@@ -1716,18 +1724,21 @@ def run_cmd(
 
 @app.command(name="ask", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def ask_cmd(
-    prompt: list[str] = typer.Argument(None, help="Prompt — every word after 'ask' is the message."),
+    prompt: list[str] = typer.Argument(None, help="Prompt words."),
     system: str = typer.Option("", "--system", "-s", help="Optional system message."),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Inject file contents into the message."),
 ) -> None:
     """Bare chat with the model — no agent loop, no context, no tools.
 
-    Example: michael ask are you there?
+    Examples:
+      michael ask are you there?
+      michael ask --file /sdcard/notes.txt summarize this
     """
     text = " ".join(prompt or []).strip()
-    if not text:
-        G.err.print("michael ask requires a prompt. Example: michael ask are you there?")
+    if not text and not file:
+        G.err.print("michael ask requires a prompt or --file. Example: michael ask are you there?")
         raise typer.Exit(1)
-    cmd_ask(text, system)
+    cmd_ask(text, system, file)
 
 
 @app.command(name="log")
