@@ -576,6 +576,48 @@ class _CompletionResponse:
     usage: Optional[dict]
 
 
+def _http_error_message(r: httpx.Response, model: str) -> str:
+    """Build an actionable error from a non-2xx model-server response.
+
+    The OpenAI/Ollama endpoint puts the real reason in the response body
+    (e.g. "model X does not support tools", "model not found"); httpx's
+    default raise_for_status() discards it, leaving only a generic status
+    line. Surface the body and, where recognisable, a concrete next step.
+    """
+    body = (r.text or "").strip()
+    detail = body
+    # Ollama / OpenAI errors are JSON: {"error": "..."} or {"error": {"message": "..."}}.
+    try:
+        parsed = r.json().get("error", "")
+        if isinstance(parsed, dict):
+            detail = parsed.get("message", "") or detail
+        elif isinstance(parsed, str) and parsed:
+            detail = parsed
+    except Exception:
+        pass
+    detail = detail[:500] if detail else "(empty response body)"
+
+    msg = f"model server rejected request ({r.status_code}): {detail}"
+    low = detail.lower()
+    if "does not support tools" in low or "support tools" in low:
+        msg += (
+            f"\n\nThe model '{model}' has no tool-calling template, but Michael always "
+            "sends tools. Set `gpu.model_repo` to a tool-capable model "
+            "(e.g. qwen2.5:72b, llama3.1:70b) and re-run `michael gpu up`."
+        )
+    elif "not found" in low and model and model in detail:
+        msg += (
+            f"\n\nThe model '{model}' is not pulled on the server. Run `michael gpu up` "
+            "to pull it, or fix `models.god.served_model_name` / `gpu.model_repo`."
+        )
+    elif not model:
+        msg += (
+            "\n\nNo model name was sent (served_model_name is empty). "
+            "Run `michael gpu up` to populate it from `gpu.model_repo`."
+        )
+    return msg
+
+
 class _Completions:
     def __init__(
         self, endpoint: str, http: httpx.Client, headers: dict, enable_thinking: bool = False
@@ -613,7 +655,8 @@ class _Completions:
             json=body,
             timeout=timeout,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise G.MichaelError(_http_error_message(r, model))
         try:
             data = r.json()
         except Exception as exc:
@@ -631,7 +674,9 @@ class _Completions:
             with client.stream(
                 "POST", f"{self._endpoint}/chat/completions", json=body
             ) as r:
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    r.read()
+                    raise G.MichaelError(_http_error_message(r, body.get("model", "")))
                 for line in r.iter_lines():
                     if not line or line == "data: [DONE]":
                         continue

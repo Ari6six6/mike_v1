@@ -617,6 +617,47 @@ def test_start_vllm_cmd_has_no_pkill():
     assert "--tool-call-parser" in cmd
 
 
+def test_http_error_message_surfaces_body_and_hints():
+    """A model-server 4xx must surface the response body (the real reason) and,
+    for recognisable Ollama cases, a concrete next step — not the generic
+    httpx status line that hid the cause behind an MDN link."""
+    from michael.backends import _http_error_message
+
+    class _Resp:
+        def __init__(self, code, obj, text=""):
+            self.status_code = code
+            self._obj = obj
+            self.text = text
+
+        def json(self):
+            if self._obj is None:
+                raise ValueError("not json")
+            return self._obj
+
+    # model lacks a tool template (Ollama returns 400 with this string)
+    msg = _http_error_message(
+        _Resp(400, {"error": "llama2 does not support tools"}), "llama2"
+    )
+    assert "400" in msg
+    assert "does not support tools" in msg
+    assert "gpu.model_repo" in msg  # actionable hint present
+
+    # model not pulled (nested {"error": {"message": ...}} shape)
+    msg = _http_error_message(
+        _Resp(404, {"error": {"message": 'model "foo:1b" not found'}}), "foo:1b"
+    )
+    assert "not found" in msg
+    assert "michael gpu up" in msg
+
+    # empty served_model_name
+    msg = _http_error_message(_Resp(400, {"error": "model is required"}), "")
+    assert "served_model_name is empty" in msg
+
+    # non-JSON body still surfaces the raw text, never an empty message
+    msg = _http_error_message(_Resp(400, None, text="Bad Request: bad field"), "qwen2.5:72b")
+    assert "Bad Request: bad field" in msg
+
+
 def test_vllm_tool_parser_per_model():
     from michael.backends import _vllm_tool_parser
     assert _vllm_tool_parser("Qwen/Qwen3-32B-AWQ") == "hermes"
