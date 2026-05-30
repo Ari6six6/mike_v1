@@ -27,6 +27,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 from michael.agent import _run_agent_loop
 from michael.backends import (
     VastClient,
+    _ensure_tunnel,
     _gpu_ssh_run,
     _ping_endpoint,
     _require_endpoint,
@@ -1221,6 +1222,35 @@ def cmd_run(prompt: str) -> None:
     _run_agent_loop(project, cfg, name, profile, prompt, verb_label="run")
 
 
+def cmd_ask(prompt: str, system: str = "") -> None:
+    """Bare chat: no agent loop, no context package, no tools. Just a raw model reply."""
+    cfg = Config.load()
+    name, profile = cfg.get_model()
+    endpoint = _require_endpoint(profile, name)
+    _ssh_preflight(cfg)
+    if cfg.gpu.ssh_host:
+        _ensure_tunnel(cfg.gpu)
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    client = llm_client(endpoint)
+    G.console.print(f"[dim]michael ask · {name} ({profile.served_model_name})[/]")
+    try:
+        chunks = client.chat.completions.create(
+            model=profile.served_model_name,
+            messages=messages,
+            stream=True,
+            timeout=float(profile.request_timeout_s),
+        )
+        for chunk in chunks:
+            if chunk.content:
+                print(chunk.content, end="", flush=True)
+        print()
+    finally:
+        client.close()
+
+
 def cmd_log(tail: int) -> None:
     project = get_active_project()
     if project:
@@ -1682,6 +1712,22 @@ def run_cmd(
         G.err.print("michael run requires a prompt. Example: michael run fix the login bug")
         raise typer.Exit(1)
     cmd_run(text)
+
+
+@app.command(name="ask", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def ask_cmd(
+    prompt: list[str] = typer.Argument(None, help="Prompt — every word after 'ask' is the message."),
+    system: str = typer.Option("", "--system", "-s", help="Optional system message."),
+) -> None:
+    """Bare chat with the model — no agent loop, no context, no tools.
+
+    Example: michael ask are you there?
+    """
+    text = " ".join(prompt or []).strip()
+    if not text:
+        G.err.print("michael ask requires a prompt. Example: michael ask are you there?")
+        raise typer.Exit(1)
+    cmd_ask(text, system)
 
 
 @app.command(name="log")
