@@ -59,6 +59,8 @@ class GpuConfig:
     model_repo: str = "qwen2.5:72b"  # Ollama tag OR HuggingFace ID depending on inference_backend
     gpu_port: int = 11434
     inference_backend: str = "vllm"  # "vllm" or "ollama" — auto-detected on gpu up
+    max_model_len: int = 32768  # vLLM --max-model-len; caps KV cache so it fits VRAM (0 = let vLLM decide)
+    gpu_memory_utilization: float = 0.92  # vLLM --gpu-memory-utilization (fraction of VRAM for the engine)
     custom_vllm_models: list = field(default_factory=list)   # user-added HuggingFace model IDs
     custom_ollama_models: list = field(default_factory=list)  # user-added Ollama tags
 
@@ -196,6 +198,8 @@ CONFIG_HELP: dict[str, str] = {
     "gpu.inference_backend": "Inference backend: 'vllm' (default) or 'ollama'. vLLM gives better MoE parallelism and agentic throughput.",
     "gpu.model_repo": "For vllm: HuggingFace ID e.g. 'deepseek-ai/DeepSeek-V4-Flash'. For ollama: tag e.g. 'qwen2.5:72b'.",
     "gpu.gpu_port": "OpenAI-compat port on the GPU (ollama default: 11434, vllm default: 8000 — configurable).",
+    "gpu.max_model_len": "vLLM only: max context length (--max-model-len). Caps KV cache to fit VRAM. Default 32768; lower it if the engine reports 'KV cache memory' errors at startup, raise it for longer context on bigger GPUs. 0 = let vLLM use the model's full max (often too large for a single GPU).",
+    "gpu.gpu_memory_utilization": "vLLM only: fraction of GPU VRAM the engine may use (--gpu-memory-utilization), 0.0–1.0. Default 0.92. Raise toward 0.95 to squeeze in more KV cache, lower if you hit OOM during load.",
     "vps.host": "VPS public IP/hostname (empty = no remote sandbox).",
     "vps.user": "SSH user (default: michael).",
     "vps.ssh_key_path": "Path to private key (default: ~/.ssh/id_ed25519).",

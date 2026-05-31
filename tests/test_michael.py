@@ -617,6 +617,37 @@ def test_start_vllm_cmd_has_no_pkill():
     assert "--tool-call-parser" in cmd
 
 
+def test_start_vllm_cmd_caps_kv_cache_memory():
+    """The launch command must bound the KV cache so the engine can start on a
+    single GPU. Modern checkpoints advertise huge native contexts (e.g.
+    Hermes-4.3-36B's 524288 tokens); without --max-model-len vLLM sizes the KV
+    cache for that full length (~128 GiB) and aborts at startup with a "KV
+    cache memory" ValueError. The default GpuConfig must emit both
+    --max-model-len and --gpu-memory-utilization."""
+    from michael.backends import _start_vllm_cmd
+    from michael.config import GpuConfig
+
+    cmd = _start_vllm_cmd(GpuConfig(model_repo="NousResearch/Hermes-4.3-36B"), ngpu=1)
+    assert "--max-model-len 32768" in cmd
+    assert "--gpu-memory-utilization 0.92" in cmd
+
+    # A custom cap flows through verbatim.
+    cmd2 = _start_vllm_cmd(
+        GpuConfig(model_repo="org/model", max_model_len=8192, gpu_memory_utilization=0.95),
+        ngpu=1,
+    )
+    assert "--max-model-len 8192" in cmd2
+    assert "--gpu-memory-utilization 0.95" in cmd2
+
+    # 0 is the opt-out: omit the flag entirely and let vLLM decide.
+    cmd0 = _start_vllm_cmd(
+        GpuConfig(model_repo="org/model", max_model_len=0, gpu_memory_utilization=0),
+        ngpu=1,
+    )
+    assert "--max-model-len" not in cmd0
+    assert "--gpu-memory-utilization" not in cmd0
+
+
 def test_http_error_message_surfaces_body_and_hints():
     """A model-server 4xx must surface the response body (the real reason) and,
     for recognisable Ollama cases, a concrete next step — not the generic

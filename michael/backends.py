@@ -318,12 +318,26 @@ def _start_vllm_cmd(
     `--quantization` (e.g. "half" + "awq" for pre-Ampere GPUs — see
     `_gpu_vllm_overrides`).
 
+    `--max-model-len` and `--gpu-memory-utilization` come from `gpu` config.
+    The former is critical: many modern checkpoints advertise a huge native
+    context (e.g. Hermes-4.3-36B's 524288 tokens), and vLLM sizes the KV cache
+    to serve one request at that full length. On a single GPU that demands far
+    more VRAM than exists (128 GiB for 512K tokens), so the engine aborts at
+    startup with "KV cache memory" before ever serving a request. Capping
+    `--max-model-len` bounds the KV cache to what the card can hold. A value
+    of 0 omits the flag and lets vLLM use the model's full max (rarely viable
+    on one GPU). See `_check_enough_kv_cache_memory` in vLLM for the check.
+
     Killing a prior server is intentionally NOT done here — call
     `_stop_vllm_cmd` in a separate SSH session first. See `_stop_vllm_cmd`
     for why the two must never be chained in one shell.
     """
     dtype_flag = f"--dtype {dtype} " if dtype else ""
     quant_flag = f"--quantization {quantization} " if quantization else ""
+    max_len = getattr(gpu, "max_model_len", 0) or 0
+    max_len_flag = f"--max-model-len {max_len} " if max_len > 0 else ""
+    mem_util = getattr(gpu, "gpu_memory_utilization", 0) or 0
+    mem_util_flag = f"--gpu-memory-utilization {mem_util} " if mem_util > 0 else ""
     tool_parser = _vllm_tool_parser(gpu.model_repo)
     return (
         "touch /tmp/vllm.log; "
@@ -335,6 +349,8 @@ def _start_vllm_cmd(
         f"--tensor-parallel-size {ngpu} "
         f"--enable-auto-tool-choice "
         f"--tool-call-parser {tool_parser} "
+        f"{max_len_flag}"
+        f"{mem_util_flag}"
         f"{dtype_flag}"
         f"{quant_flag}"
         f">/tmp/vllm.log 2>&1 </dev/null & "
