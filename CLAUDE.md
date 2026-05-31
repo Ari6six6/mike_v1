@@ -116,6 +116,13 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `gpu.gpu_port` | OpenAI-compat port on the GPU (ollama default `11434`, vLLM default `8000`) |
 | `models.<name>.request_timeout_s` | LLM request timeout in seconds |
 | `models.<name>.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
+| `models.<name>.gpu_name` | Named GPU that serves this model (empty = primary `gpu`). Set by `michael gpu up <name>`. |
+| `models.<name>.enable_thinking` | Enable `<think>` reasoning traces — set `true` for Hermes 4.3 on the senior model. |
+| `models.<name>.tool_uncapable` | Set `true` for base-model fine-tunes with no native function-calling (e.g. the junior specialist). |
+| `gpus.<name>.ssh_host` | SSH host for a named GPU instance. Set by `michael gpu up <name>`. |
+| `gpus.<name>.gpu_port` | Local tunnel port for the named GPU — must be unique (e.g. god=11434, junior=11435). |
+| `gpus.<name>.model_repo` | HuggingFace ID (vLLM) or Ollama tag for the named GPU. |
+| `gpus.<name>.inference_backend` | `vllm` or `ollama` — auto-detected on `gpu up`. |
 | `vps.host` | VPS public IP/hostname (empty = no remote sandbox) |
 | `vps.user` | SSH user (default: `michael`) |
 | `vps.ssh_key_path` | Path to private key (default: `~/.ssh/id_ed25519`) |
@@ -142,9 +149,9 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael use <slug>` | Switch active project |
 | `michael current` | Print active project |
 | `michael config` | Open `config.json` in `$EDITOR` |
-| `michael gpu up` | SSH to GPU, install ollama if missing, pull model, cache endpoint |
+| `michael gpu up [name]` | Provision GPU (default: `god`). `michael gpu up junior` provisions a second GPU on its own SSH tunnel and port. |
 | `michael gpu new` | Swap to a new GPU — clear cached SSH/instance state, re-prompt, then `gpu up` |
-| `michael gpu down` | Pause the GPU instance |
+| `michael gpu down [name]` | Pause the GPU instance (default: `god`) |
 | `michael status` | Derived state from event log |
 | `michael run <prompt…>` | **Run the agent.** Everything after `run` is the prompt |
 | `michael log [--tail N]` | Show event log (last 20 by default) |
@@ -186,6 +193,10 @@ discarded. Ctrl-C also discards staged changes.
 | `search_tools(query)` | Auto-executes; looks up tool schemas by name/keyword |
 | `fetch_url(url)` | Auto-executes; HTTP GET of arbitrary content |
 | `forge_tool(name, schema, code)` | Auto-executes; writes a new tool to `<project>/tools/<name>.py`, available **next run** |
+<<<<<<< Updated upstream
+=======
+| `spawn_specialist(model_name, prompt)` | Auto-executes; calls a specialist model as a pure text oracle — no tools, no loop. Returns raw generated text. The senior (Hermes) validates and iterates using its own tools. |
+>>>>>>> Stashed changes
 | `load_model(profile)` | Auto-executes; switch to a different model profile mid-run |
 | `run_in_sandbox(python_code)` | Confirms; isolated podman (local or remote via SSH) |
 | `run_shell(cmd, timeout_s=60)` | Confirms; runs in project workspace |
