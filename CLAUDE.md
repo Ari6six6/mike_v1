@@ -114,6 +114,8 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `default_model` | Profile to use (default: `god`). Override per-run with `--model <name>` |
 | `gpu.model_repo` | vLLM: HuggingFace ID e.g. `NousResearch/Hermes-4.3-36B`; Ollama: tag e.g. `qwen2.5:72b` |
 | `gpu.gpu_port` | OpenAI-compat port on the GPU (ollama default `11434`, vLLM default `8000`) |
+| `gpu.max_model_len` | vLLM only: max context length (`--max-model-len`). Caps KV cache to fit VRAM (default `32768`). Lower it if startup fails with a "KV cache memory" error; `0` lets vLLM use the model's full native max (often too large for one GPU) |
+| `gpu.gpu_memory_utilization` | vLLM only: fraction of GPU VRAM the engine may use (`--gpu-memory-utilization`, default `0.92`). Raise toward `0.95` for more KV cache, lower on load-time OOM |
 | `models.<name>.request_timeout_s` | LLM request timeout in seconds |
 | `models.<name>.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
 | `vps.host` | VPS public IP/hostname (empty = no remote sandbox) |

@@ -846,6 +846,11 @@ def _run_vllm_setup(cfg: "Config", gpu: "GpuConfig") -> None:
             f"--{k} {v}" for k, v in (("dtype", dtype), ("quantization", quant)) if v
         )
         G.console.print(f"[dim]pre-Ampere GPU — launching with {extras}[/]")
+    if getattr(gpu, "max_model_len", 0):
+        G.console.print(
+            f"[dim]context capped at --max-model-len {gpu.max_model_len} "
+            f"(raise gpu.max_model_len for longer context on bigger GPUs)[/]"
+        )
     _gpu_ssh_run(gpu, _stop_vllm_cmd(), timeout=30)
     cp = _gpu_ssh_run(gpu, _start_vllm_cmd(gpu, ngpu, dtype, quant), timeout=60)
     pid = cp.stdout.strip().split("\n")[-1]
