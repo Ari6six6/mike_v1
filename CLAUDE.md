@@ -118,6 +118,8 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `gpu.gpu_memory_utilization` | vLLM only: fraction of GPU VRAM the engine may use (`--gpu-memory-utilization`, default `0.92`). Raise toward `0.95` for more KV cache, lower on load-time OOM |
 | `models.<name>.request_timeout_s` | LLM request timeout in seconds |
 | `models.<name>.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
+| `models.junior.endpoint` | Junior model endpoint for the `delegate` tool (e.g. `http://localhost:11434/v1`) |
+| `models.junior.served_model_name` | Junior model tag/ID (e.g. `qwen2.5-coder:7b`) |
 | `vps.host` | VPS public IP/hostname (empty = no remote sandbox) |
 | `vps.user` | SSH user (default: `michael`) |
 | `vps.ssh_key_path` | Path to private key (default: `~/.ssh/id_ed25519`) |
@@ -188,6 +190,7 @@ discarded. Ctrl-C also discards staged changes.
 | `search_tools(query)` | Auto-executes; looks up tool schemas by name/keyword |
 | `fetch_url(url)` | Auto-executes; HTTP GET of arbitrary content |
 | `forge_tool(name, schema, code)` | Auto-executes; writes a new tool to `<project>/tools/<name>.py`, available **next run** |
+| `delegate(task, test_code, max_tries)` | Auto-executes; sends a code-gen task to the junior model (`models.junior`), loops with sandbox feedback until the test passes or attempts are exhausted |
 | `load_model(profile)` | Auto-executes; switch to a different model profile mid-run |
 | `run_in_sandbox(python_code)` | Confirms; isolated podman (local or remote via SSH) |
 | `run_shell(cmd, timeout_s=60)` | Confirms; runs in project workspace |
