@@ -60,6 +60,8 @@ class GpuConfig:
     model_repo: str = "qwen2.5:72b"  # Ollama tag OR HuggingFace ID depending on inference_backend
     gpu_port: int = 11434
     inference_backend: str = "vllm"  # "vllm" or "ollama" — auto-detected on gpu up
+    max_model_len: int = 32768  # vLLM --max-model-len; caps KV cache so it fits VRAM (0 = let vLLM decide)
+    gpu_memory_utilization: float = 0.92  # vLLM --gpu-memory-utilization (fraction of VRAM for the engine)
     custom_vllm_models: list = field(default_factory=list)   # user-added HuggingFace model IDs
     custom_ollama_models: list = field(default_factory=list)  # user-added Ollama tags
 
@@ -205,7 +207,11 @@ def make_stub_config() -> Config:
     save-time pruning keeps the on-disk file to just what the user (or
     `michael gpu up`) has actually written.
     """
-    return Config(models={"god": ModelProfile(enable_thinking=True)}, default_model="god")
+    return Config(
+        models={"god": ModelProfile(enable_thinking=True)},
+        default_model="god",
+        sandbox=SandboxConfig(passthrough=True),
+    )
 
 
 CONFIG_HELP: dict[str, str] = {
