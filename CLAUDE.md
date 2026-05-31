@@ -195,10 +195,7 @@ discarded. Ctrl-C also discards staged changes.
 | `search_tools(query)` | Auto-executes; looks up tool schemas by name/keyword |
 | `fetch_url(url)` | Auto-executes; HTTP GET of arbitrary content |
 | `forge_tool(name, schema, code)` | Auto-executes; writes a new tool to `<project>/tools/<name>.py`, available **next run** |
-<<<<<<< Updated upstream
-=======
 | `spawn_specialist(model_name, prompt)` | Auto-executes; calls a specialist model as a pure text oracle — no tools, no loop. Returns raw generated text. The senior (Hermes) validates and iterates using its own tools. |
->>>>>>> Stashed changes
 | `load_model(profile)` | Auto-executes; switch to a different model profile mid-run |
 | `run_in_sandbox(python_code)` | Confirms; isolated podman (local or remote via SSH) |
 | `run_shell(cmd, timeout_s=60)` | Confirms; runs in project workspace |
