@@ -1215,10 +1215,10 @@ def cmd_status() -> None:
     G.console.print(table)
 
 
-def cmd_run(prompt: str) -> None:
+def cmd_run(prompt: str, model: str = "") -> None:
     project = require_active_project()
     cfg = Config.load()
-    name, profile = cfg.get_model()
+    name, profile = cfg.get_model(model or None)
     _run_agent_loop(project, cfg, name, profile, prompt, verb_label="run")
 
 
@@ -1710,16 +1710,18 @@ def status_cmd() -> None:
 @app.command(name="run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run_cmd(
     prompt: list[str] = typer.Argument(None, help="Prompt — every word after 'run' is the prompt."),
+    model: str = typer.Option("", "--model", "-m", help="Model profile to use (overrides default_model)."),
 ) -> None:
     """Run the agent on a prompt. Everything after 'run' is the prompt.
 
     Example: michael run fix the auth bug in login.py
+    Example: michael run --model hermes fix the auth bug in login.py
     """
     text = " ".join(prompt or []).strip()
     if not text:
         G.err.print("michael run requires a prompt. Example: michael run fix the login bug")
         raise typer.Exit(1)
-    cmd_run(text)
+    cmd_run(text, model)
 
 
 @app.command(name="ask", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1969,7 +1971,15 @@ def dispatch_repl(line: str) -> None:
         if not rest:
             G.err.print("run requires a prompt. Example: run fix the auth bug")
             return
-        cmd_run(" ".join(rest))
+        model_name = ""
+        remaining = list(rest)
+        if remaining and remaining[0] in ("--model", "-m") and len(remaining) > 1:
+            model_name = remaining[1]
+            remaining = remaining[2:]
+        if not remaining:
+            G.err.print("run requires a prompt after --model. Example: run --model hermes fix the auth bug")
+            return
+        cmd_run(" ".join(remaining), model_name)
     elif cmd == "gpu":
         sub = rest[0] if rest else ""
         if sub == "up":

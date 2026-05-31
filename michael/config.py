@@ -188,9 +188,9 @@ def make_stub_config() -> Config:
 
 CONFIG_HELP: dict[str, str] = {
     "vast_api_key": "Vast.ai console API key.",
-    "default_model": "Profile name to use (default: 'god').",
+    "default_model": "Profile name to use (default: 'god'). Override per-run with `michael run --model <name>`.",
     "models.god.vast_instance_id": "Numeric ID of the rented GPU instance.",
-    "models.god.served_model_name": "Model name sent in API requests. Auto-filled by `michael gpu up`. For vllm: HF ID (e.g. 'deepseek-ai/DeepSeek-V4-Flash'); for ollama: tag.",
+    "models.god.served_model_name": "Model name sent in API requests. Auto-filled by `michael gpu up`. For vllm: HF ID (e.g. 'NousResearch/Hermes-4.3-36B'); for ollama: tag.",
     "models.god.request_timeout_s": "LLM request timeout (seconds).",
     "models.god.tool_uncapable": "If true, skip tools/tool_choice params and use text-format tool calling instead (for models without a function-calling template).",
     "gpu.inference_backend": "Inference backend: 'vllm' (default) or 'ollama'. vLLM gives better MoE parallelism and agentic throughput.",

@@ -19,11 +19,12 @@ Phone (Termux / Linux)          VPS (Ubuntu 24.04, rootless podman)
   Ollama (OpenAI-compat)
 ```
 
-**One model, full authority, always:**
-There is a single model profile (`god`). Inference runs on whatever GPU cluster you rent —
-Ollama is installed there over SSH on first `michael gpu up`, the model is pulled by tag
-(default `qwen2.5:72b`, configurable via `gpu.model_repo`), and the endpoint is cached so
-subsequent runs skip straight to the model. No tier switching, no mode selection.
+**Named model profiles:**
+Multiple model profiles can coexist in `config.json` under `models.<name>`. The default
+profile is `god` (auto-created by `michael init`). Additional profiles (e.g. `hermes`) can
+be added manually and selected per-run with `michael run --model hermes <prompt>` or made
+the default by setting `default_model`. `michael gpu up` fills in the `endpoint` and
+`served_model_name` for whichever profile is active at setup time.
 
 **Four-header context package** (sent on every fresh LLM instance):
 - H1 — user's prompts verbatim, in order
@@ -110,11 +111,11 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | Key | Description |
 |-----|-------------|
 | `vast_api_key` | Vast.ai console API key |
-| `default_model` | Profile to use (default: `god`) |
-| `gpu.model_repo` | Ollama model tag, e.g. `qwen2.5:72b` |
-| `gpu.gpu_port` | Ollama OpenAI-compat port on the GPU (default `11434`) |
-| `models.god.request_timeout_s` | LLM request timeout in seconds |
-| `models.god.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
+| `default_model` | Profile to use (default: `god`). Override per-run with `--model <name>` |
+| `gpu.model_repo` | vLLM: HuggingFace ID e.g. `NousResearch/Hermes-4.3-36B`; Ollama: tag e.g. `qwen2.5:72b` |
+| `gpu.gpu_port` | OpenAI-compat port on the GPU (ollama default `11434`, vLLM default `8000`) |
+| `models.<name>.request_timeout_s` | LLM request timeout in seconds |
+| `models.<name>.served_model_name` | Auto-filled by `gpu up` from `gpu.model_repo` |
 | `vps.host` | VPS public IP/hostname (empty = no remote sandbox) |
 | `vps.user` | SSH user (default: `michael`) |
 | `vps.ssh_key_path` | Path to private key (default: `~/.ssh/id_ed25519`) |
@@ -145,7 +146,7 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael gpu new` | Swap to a new GPU — clear cached SSH/instance state, re-prompt, then `gpu up` |
 | `michael gpu down` | Pause the GPU instance |
 | `michael status` | Derived state from event log |
-| `michael run <prompt…>` | **Run the agent.** Everything after `run` is the prompt |
+| `michael run [--model <name>] <prompt…>` | **Run the agent.** Optional `--model`/`-m` overrides `default_model` for this run |
 | `michael log [--tail N]` | Show event log (last 20 by default) |
 | `michael sandbox <file.py>` | Run Python file in isolated sandbox |
 | `michael undo [--list] [<id>]` | Restore the most recent (or named) change |
