@@ -146,7 +146,7 @@ The LLM reads your code, iterates, calls `commit_changes` when done. Done.
 | `michael gpu new` | Swap to a new GPU — clear cached SSH/instance state, re-prompt, then `gpu up` |
 | `michael gpu down` | Pause the GPU instance |
 | `michael status` | Derived state from event log |
-| `michael run [--model <name>] <prompt…>` | **Run the agent.** Optional `--model`/`-m` overrides `default_model` for this run |
+| `michael run <prompt…>` | **Run the agent.** Everything after `run` is the prompt |
 | `michael log [--tail N]` | Show event log (last 20 by default) |
 | `michael sandbox <file.py>` | Run Python file in isolated sandbox |
 | `michael undo [--list] [<id>]` | Restore the most recent (or named) change |

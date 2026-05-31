@@ -88,16 +88,19 @@ VLLM_SUPPORTED_MODELS = [
     "deepseek-ai/DeepSeek-V4-Flash",
     "Qwen/Qwen3-32B-AWQ",
     "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    "NousResearch/Hermes-4.3-36B",
 ]
 _VLLM_MODEL_LABELS: dict[str, str] = {
     "deepseek-ai/DeepSeek-V4-Flash":   "MoE, V4 Flash — 8-bit default, primary target",
     "Qwen/Qwen3-32B-AWQ":              "dense, 4-bit AWQ, ~20 GB VRAM",
     "Qwen/Qwen2.5-72B-Instruct-AWQ":   "dense, 4-bit AWQ, ~40 GB VRAM",
+    "NousResearch/Hermes-4.3-36B":     "36B instruct, native tool-calling, ChatML — ~72 GB VRAM bf16",
 }
 _VLLM_MODEL_MIN_DISK_GB: dict[str, int] = {
     "deepseek-ai/DeepSeek-V4-Flash":   30,
     "Qwen/Qwen3-32B-AWQ":              25,
     "Qwen/Qwen2.5-72B-Instruct-AWQ":   45,
+    "NousResearch/Hermes-4.3-36B":     75,
 }
 
 tools_app = typer.Typer(help="Inspect and run dynamic tools.")
@@ -1215,10 +1218,10 @@ def cmd_status() -> None:
     G.console.print(table)
 
 
-def cmd_run(prompt: str, model: str = "") -> None:
+def cmd_run(prompt: str) -> None:
     project = require_active_project()
     cfg = Config.load()
-    name, profile = cfg.get_model(model or None)
+    name, profile = cfg.get_model()
     _run_agent_loop(project, cfg, name, profile, prompt, verb_label="run")
 
 
@@ -1710,18 +1713,16 @@ def status_cmd() -> None:
 @app.command(name="run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run_cmd(
     prompt: list[str] = typer.Argument(None, help="Prompt — every word after 'run' is the prompt."),
-    model: str = typer.Option("", "--model", "-m", help="Model profile to use (overrides default_model)."),
 ) -> None:
     """Run the agent on a prompt. Everything after 'run' is the prompt.
 
     Example: michael run fix the auth bug in login.py
-    Example: michael run --model hermes fix the auth bug in login.py
     """
     text = " ".join(prompt or []).strip()
     if not text:
         G.err.print("michael run requires a prompt. Example: michael run fix the login bug")
         raise typer.Exit(1)
-    cmd_run(text, model)
+    cmd_run(text)
 
 
 @app.command(name="ask", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -1971,15 +1972,7 @@ def dispatch_repl(line: str) -> None:
         if not rest:
             G.err.print("run requires a prompt. Example: run fix the auth bug")
             return
-        model_name = ""
-        remaining = list(rest)
-        if remaining and remaining[0] in ("--model", "-m") and len(remaining) > 1:
-            model_name = remaining[1]
-            remaining = remaining[2:]
-        if not remaining:
-            G.err.print("run requires a prompt after --model. Example: run --model hermes fix the auth bug")
-            return
-        cmd_run(" ".join(remaining), model_name)
+        cmd_run(" ".join(rest))
     elif cmd == "gpu":
         sub = rest[0] if rest else ""
         if sub == "up":
