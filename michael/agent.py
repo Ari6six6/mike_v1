@@ -333,7 +333,8 @@ def _run_agent_loop(
     backend_label = (
         "remote-podman (vps)" if cfg.vps_active()
         else ("local-podman" if isinstance(backend, LocalPodmanBackend)
-              else "no-sandbox")
+              else ("local-python3 (passthrough)" if cfg.sandbox.passthrough
+                    else "no-sandbox"))
     )
     G.console.print(
         f"[bold cyan]michael {verb_label}[/] [dim]project={project.slug}  "

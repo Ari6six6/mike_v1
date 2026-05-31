@@ -99,6 +99,9 @@ class Config:
         valid_mp = set(ModelProfile.__dataclass_fields__)
         for name, prof in models_raw.items():
             if isinstance(prof, dict):
+                # god profiles get enable_thinking=True unless explicitly set to False
+                if name == "god" and "enable_thinking" not in prof:
+                    prof = {**prof, "enable_thinking": True}
                 models[name] = ModelProfile(**{k: v for k, v in prof.items() if k in valid_mp})
 
         vps_raw = data.pop("vps", None) or {}
@@ -202,7 +205,7 @@ def make_stub_config() -> Config:
     save-time pruning keeps the on-disk file to just what the user (or
     `michael gpu up`) has actually written.
     """
-    return Config(models={"god": ModelProfile()}, default_model="god")
+    return Config(models={"god": ModelProfile(enable_thinking=True)}, default_model="god")
 
 
 CONFIG_HELP: dict[str, str] = {
